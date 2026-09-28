@@ -11,7 +11,17 @@
  *   shape-validated before use
  */
 
-import type { Settings, SiteIndexStatus, SourceInfo } from './types';
+import type {
+  ChatMessage,
+  ModelPrefs,
+  QaCitation,
+  QaErrorReason,
+  QaUsage,
+  Settings,
+  SiteIndexStatus,
+  SourceInfo,
+} from './types';
+import { EMBED_DIM } from './types';
 import { isSameOrigin, normalizeUrl } from './url';
 
 export const MSG = {
@@ -20,6 +30,7 @@ export const MSG = {
   getSiteStatus: 'get-site-status',
   listSources: 'list-sources',
   indexSite: 'index-site',
+  ask: 'ask-site',
 } as const;
 
 export type Message =
@@ -27,7 +38,11 @@ export type Message =
   | { type: typeof MSG.saveSettings; settings: unknown }
   | { type: typeof MSG.getSiteStatus; origin: string }
   | { type: typeof MSG.listSources; origin: string }
-  | { type: typeof MSG.indexSite; origin: string; url: string };
+  | { type: typeof MSG.indexSite; origin: string; url: string }
+  | { type: typeof MSG.ask; origin: string; question: string; requestId: string };
+
+/** The only failure a one-shot request can hit before the stream starts (docs/03). */
+export type AskRejectReason = 'permission' | 'not-indexed' | 'no-key' | 'spend-cap' | 'busy';
 
 /** Popup-facing site summary for the status and storage readouts (docs/03). */
 export interface SiteStatusMeta {
@@ -48,7 +63,8 @@ export type MessageResponse =
   | { ok: true; kind: 'status'; status: SiteIndexStatus | 'inactive'; meta: SiteStatusMeta | null }
   | { ok: true; kind: 'sources'; sources: SourceInfo[]; failed: FailedUrl[] }
   | { ok: true; kind: 'indexing'; origin: string }
-  | { ok: false; error: 'permission' | 'unhandled' };
+  | { ok: true; kind: 'asking'; origin: string }
+  | { ok: false; error: AskRejectReason | 'unhandled' };
 
 /** Port names (docs/03): popup progress events, and the SW -> runtime host channel. */
 export const PORT = {
@@ -70,11 +86,27 @@ export type ProgressPortEvent =
       totalChunks: number;
     }
   | { type: 'index-ready'; origin: string; chunkCount: number; sizeEstimateBytes: number }
-  | { type: 'index-failed'; origin: string; reason: string };
+  | { type: 'index-failed'; origin: string; reason: string }
+  | { type: 'answer-token'; requestId: string; origin: string; delta: string }
+  | { type: 'answer-retry'; requestId: string; origin: string }
+  | {
+      type: 'answer-done';
+      requestId: string;
+      origin: string;
+      answer: string;
+      citations: QaCitation[];
+      usage: QaUsage | null;
+      costUsd: number | null;
+      spentThisMonthUsd: number;
+    }
+  | { type: 'answer-error'; requestId: string; origin: string; reason: QaErrorReason; message: string };
+
+/** A stream error that can surface over the host port (docs/06 matrix). */
+export type StreamError = { reason: QaErrorReason; message: string };
 
 /**
  * SW <-> runtime host frames over the `siteqa-host` port. Batches are
- * correlated on `batchId` (one in flight at a time, docs/03).
+ * correlated on `batchId`; QA streams on `requestId` (docs/03).
  */
 export type HostPortEvent =
   | {
@@ -84,7 +116,21 @@ export type HostPortEvent =
       chunks: { chunkId: string; text: string }[];
     }
   | { type: 'embed-done'; dbName: string; batchId: number; embedded: number }
-  | { type: 'embed-error'; dbName: string; batchId: number; error: string };
+  | { type: 'embed-error'; dbName: string; batchId: number; error: string }
+  | { type: 'embed-query'; batchId: number; texts: string[] }
+  | { type: 'embed-query-done'; batchId: number; vecs: Float32Array[] }
+  | { type: 'embed-query-error'; batchId: number; error: string }
+  | {
+      type: 'start-stream';
+      requestId: string;
+      messages: ChatMessage[];
+      apiKey: string;
+      modelPrefs: ModelPrefs;
+    }
+  | { type: 'stream-chunk'; requestId: string; delta: string }
+  | { type: 'stream-retry'; requestId: string }
+  | { type: 'stream-done'; requestId: string; usage: QaUsage | null }
+  | { type: 'stream-error'; requestId: string; error: StreamError };
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null;
@@ -135,6 +181,14 @@ export function parseMessage(value: unknown): Message | null {
       const url = normalizeEntryUrl(value.origin, value.url);
       return url !== null ? { type: MSG.indexSite, origin: value.origin, url } : null;
     }
+    case MSG.ask: {
+      if (!isValidOrigin(value.origin)) return null;
+      const question = typeof value.question === 'string' ? value.question.trim() : '';
+      if (question.length === 0 || question.length > 4000) return null;
+      const requestId = typeof value.requestId === 'string' ? value.requestId : '';
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(requestId)) return null;
+      return { type: MSG.ask, origin: value.origin, question, requestId };
+    }
     default:
       return null;
   }
@@ -161,10 +215,85 @@ export function isEmbedBatchFrame(value: unknown): value is HostPortEvent & { ty
 }
 
 /** Shape-validates an inbound `embed-done` / `embed-error` frame on the host port. */
-export function isHostFrame(value: unknown): value is HostPortEvent {
+export function isHostFrame(value: unknown): value is HostPortEvent & {
+  type: 'embed-done' | 'embed-error';
+} {
   if (!isRecord(value) || typeof value.batchId !== 'number' || typeof value.dbName !== 'string') return false;
   if (value.type === 'embed-done') return typeof value.embedded === 'number';
   if (value.type === 'embed-error') return typeof value.error === 'string';
+  return false;
+}
+
+/** Shape-validates an inbound `embed-query` frame on the host port. */
+export function isEmbedQueryFrame(value: unknown): value is HostPortEvent & { type: 'embed-query' } {
+  if (!isRecord(value) || value.type !== 'embed-query' || typeof value.batchId !== 'number') return false;
+  if (!Array.isArray(value.texts) || value.texts.length === 0 || value.texts.length > 8) return false;
+  return value.texts.every((t) => typeof t === 'string' && t.length > 0);
+}
+
+const isVec = (v: unknown): v is Float32Array =>
+  v instanceof Float32Array && v.length === EMBED_DIM;
+
+/** Shape-validates an inbound `embed-query-done` / `embed-query-error` frame. */
+export function isEmbedQueryResultFrame(value: unknown): value is HostPortEvent & {
+  type: 'embed-query-done' | 'embed-query-error';
+} {
+  if (!isRecord(value) || typeof value.batchId !== 'number') return false;
+  if (value.type === 'embed-query-done') {
+    return Array.isArray(value.vecs) && value.vecs.length > 0 && value.vecs.every(isVec);
+  }
+  if (value.type === 'embed-query-error') return typeof value.error === 'string';
+  return false;
+}
+
+const isChatMessage = (v: unknown): v is ChatMessage =>
+  isRecord(v) && (v.role === 'system' || v.role === 'user') && typeof v.content === 'string';
+
+const STREAM_ERROR_REASONS: readonly string[] = [
+  'invalid_key',
+  'no_balance',
+  'rate_limited',
+  'provider',
+  'network',
+  'bad_request',
+  'too_large',
+];
+
+const isStreamError = (v: unknown): v is StreamError =>
+  isRecord(v) &&
+  typeof v.reason === 'string' &&
+  STREAM_ERROR_REASONS.includes(v.reason) &&
+  typeof v.message === 'string';
+
+/** Shape-validates an inbound `start-stream` frame on the host port. */
+export function isStartStreamFrame(value: unknown): value is HostPortEvent & { type: 'start-stream' } {
+  if (!isRecord(value) || value.type !== 'start-stream') return false;
+  if (typeof value.requestId !== 'string' || value.requestId.length === 0) return false;
+  if (typeof value.apiKey !== 'string' || value.apiKey.length === 0) return false;
+  if (!Array.isArray(value.messages) || value.messages.length < 2 || !value.messages.every(isChatMessage)) return false;
+  const prefs = value.modelPrefs;
+  if (!isRecord(prefs) || typeof prefs.modelId !== 'string' || prefs.modelId.length === 0) return false;
+  if (typeof prefs.thinking !== 'boolean' || typeof prefs.maxOutputTokens !== 'number') return false;
+  if (prefs.temperature !== null && typeof prefs.temperature !== 'number') return false;
+  return true;
+}
+
+/** Shape-validates an inbound `stream-chunk` / `stream-retry` / `stream-done` / `stream-error` frame. */
+export function isStreamFrame(value: unknown): value is HostPortEvent & {
+  type: 'stream-chunk' | 'stream-retry' | 'stream-done' | 'stream-error';
+} {
+  if (!isRecord(value) || typeof value.requestId !== 'string' || value.requestId.length === 0) return false;
+  if (value.type === 'stream-chunk') return typeof value.delta === 'string';
+  if (value.type === 'stream-retry') return true;
+  if (value.type === 'stream-done') {
+    if (value.usage === null) return true;
+    return (
+      isRecord(value.usage) &&
+      typeof value.usage.promptTokens === 'number' &&
+      typeof value.usage.completionTokens === 'number'
+    );
+  }
+  if (value.type === 'stream-error') return isStreamError(value.error);
   return false;
 }
 

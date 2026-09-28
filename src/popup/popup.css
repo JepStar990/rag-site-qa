@@ -132,3 +132,106 @@ button:disabled {
   font-size: 11px;
   word-break: break-all;
 }
+
+.qa {
+  margin-top: 10px;
+  border-top: 1px solid color-mix(in srgb, currentColor 15%, transparent);
+  padding-top: 8px;
+}
+
+.qa-input {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.qa-input textarea {
+  font: inherit;
+  min-height: 48px;
+  resize: vertical;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+  background: transparent;
+  padding: 6px;
+}
+
+.qa-input button {
+  align-self: flex-end;
+}
+
+.qa-answer {
+  margin-top: 8px;
+}
+
+.qa-question {
+  font-weight: 600;
+  margin: 4px 0;
+}
+
+.qa-markdown {
+  margin: 4px 0;
+  word-break: break-word;
+}
+
+.qa-markdown p {
+  margin: 6px 0;
+}
+
+.qa-markdown pre {
+  max-height: 200px;
+  overflow: auto;
+  padding: 6px;
+  border-radius: 6px;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+
+.qa-markdown code {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.qa-markdown blockquote {
+  margin: 6px 0;
+  padding-left: 8px;
+  border-left: 3px solid color-mix(in srgb, currentColor 30%, transparent);
+}
+
+.qa-markdown table {
+  border-collapse: collapse;
+}
+
+.qa-markdown th,
+.qa-markdown td {
+  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+  padding: 3px 6px;
+}
+
+sup.cite {
+  margin: 0 2px;
+}
+
+sup.cite a {
+  text-decoration: none;
+  font-size: 10px;
+  font-weight: 600;
+  color: #2563eb;
+}
+
+.qa-spend {
+  font-size: 11px;
+  margin: 6px 0 0;
+}
+
+.qa-cursor {
+  margin: 2px 0;
+}
+
+.link-button {
+  display: block;
+  margin-top: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  text-decoration: underline;
+  font: inherit;
+}

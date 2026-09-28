@@ -24,6 +24,9 @@ const clampBool = (v: unknown, fallback: boolean): boolean => (typeof v === 'boo
 const clampString = (v: unknown, fallback: string): string =>
   typeof v === 'string' && v.trim().length > 0 ? v.trim() : fallback;
 
+const clampMonth = (v: unknown, fallback: string | null): string | null =>
+  typeof v === 'string' && /^\d{4}-\d{2}$/.test(v) ? v : fallback;
+
 /**
  * Merge partial user input with `current` (the stored settings) and clamp
  * everything to documented bounds. `current` defaults to DEFAULT_SETTINGS.
@@ -56,6 +59,7 @@ export function sanitizeSettings(raw: unknown, current: Settings = DEFAULT_SETTI
     budget: {
       monthlyLimitUsd: clampNum(budget.monthlyLimitUsd, 0, 1000, current.budget.monthlyLimitUsd),
       spentThisMonthUsd: current.budget.spentThisMonthUsd,
+      spendMonth: clampMonth(budget.spendMonth, current.budget.spendMonth),
       pricePerMTokens: {
         input: clampNum(price.input, 0.0001, 1000, current.budget.pricePerMTokens.input),
         output: clampNum(price.output, 0.0001, 1000, current.budget.pricePerMTokens.output),

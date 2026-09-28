@@ -41,7 +41,12 @@ Firefox has no `chrome.offscreen` API; the `offscreen` permission is stripped by
 
 The Firefox target uses `options_ui` with `open_in_tab` (`options_page` only landed in Firefox 126) and sets `strict_min_version: 128.0` because `optional_host_permissions` arrived in Firefox 128. Both keys are verified by `web-ext lint` in CI.
 
-One known, accepted `web-ext lint` warning: `UNSAFE_VAR_ASSIGNMENT` on the bundled Preact core. Preact ships an `innerHTML` assignment for its `dangerouslySetInnerHTML` API; SiteQA code never sets `innerHTML` or uses that API, and model output is rendered sanitized via marked + DOMPurify (04). The warning is therefore a vendor-code false positive and does not block submission (AMO treats it as a warning).
+Known `web-ext lint` warnings (8) and one notice, all accepted and non-blocking (AMO treats them as warnings):
+
+- `UNSAFE_VAR_ASSIGNMENT` on bundled vendor code: Preact core and hooks (Preact ships an `innerHTML` assignment behind its `dangerouslySetInnerHTML` API), transformers.js (in-process in the Firefox background bundle), and DOMPurify. SiteQA code never assigns `innerHTML` or uses that API, and model output is rendered sanitized via marked + DOMPurify with a tag allowlist (04) — vendor-code false positives.
+- `DANGEROUS_EVAL` on transformers.js: the bundled library uses the `Function` constructor for its WASM loader. Not called from SiteQA code; unavoidable while in-process inference is a hard requirement (ADR-0001).
+- `UNSUPPORTED_API` in the Firefox background bundle: a reference to `chrome.offscreen` that is runtime-guarded by the `'offscreen' in browserApi` switch (ADR-0001) and never executed on Firefox.
+- Notice `MISSING_DATA_COLLECTION_PERMISSIONS`: Firefox will require `data_collection_permissions` in the future. SiteQA collects no data (no analytics, no telemetry); the item will be set when the listing is created. M4's "linters pass" gate covers reviewing these before submission.
 
 ## Permission justification
 
