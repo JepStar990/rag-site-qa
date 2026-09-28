@@ -3,18 +3,24 @@ import { describe, expect, it } from 'vitest';
 import {
   countChunks,
   countChunksByPage,
+  countPendingChunks,
   countQueue,
   deletePageContent,
   dequeueNext,
   enqueueItems,
   getChunksByUrlHash,
+  getFailedQueueItems,
   getMeta,
   getPage,
+  getPendingChunks,
   listPages,
   openSiteDb,
   putChunks,
   putMeta,
   putPage,
+  putPageAndChunks,
+  putChunkVecs,
+  requeueDoneForRefresh,
   requeueInterrupted,
   updateQueueItem,
 } from '../src/lib/db/site-db.js';
@@ -159,6 +165,95 @@ describe('site-db', () => {
       await updateQueueItem(db, fetching);
       expect(await requeueInterrupted(db)).toBe(1);
       expect(await dequeueNext(db)).toEqual({ ...fetching, status: 'queued' });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('writes a page and its chunks atomically', async () => {
+    const db = await openSiteDb(originOf('atomic'));
+    try {
+      await putPageAndChunks(db, page('https://a.test/a', 'hash-a'), [chunk('hash-a', 0), chunk('hash-a', 1)]);
+      expect(await getPage(db, 'hash-a')).toEqual(page('https://a.test/a', 'hash-a'));
+      expect(await getChunksByUrlHash(db, 'hash-a')).toHaveLength(2);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('merges vectors into existing chunks without clobbering metadata', async () => {
+    const db = await openSiteDb(originOf('vecs'));
+    try {
+      const pending = { ...chunk('hash-a', 0), vec: new Float32Array(0) };
+      await putChunks(db, [pending]);
+      const vec = new Float32Array([0.9, 0.8, 0.7]);
+      await putChunkVecs(db, [{ chunkId: pending.chunkId, vec }]);
+      const [merged] = await getChunksByUrlHash(db, 'hash-a');
+      expect(merged?.vec).toEqual(vec);
+      expect(merged?.text).toBe('text 0');
+      expect(merged?.tokens).toBe(4);
+      // Unknown chunk ids are ignored.
+      await putChunkVecs(db, [{ chunkId: 'missing', vec }]);
+      expect(await countChunks(db)).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('lists only pending chunks, up to the limit', async () => {
+    const db = await openSiteDb(originOf('pending'));
+    try {
+      const embedded = chunk('hash-a', 0);
+      const pending = [chunk('hash-a', 1), chunk('hash-a', 2)].map((c) => ({ ...c, vec: new Float32Array(0) }));
+      await putChunks(db, [embedded, ...pending]);
+      expect(await countPendingChunks(db)).toBe(2);
+      const batch = await getPendingChunks(db, 1);
+      expect(batch).toHaveLength(1);
+      expect(batch[0]?.vec).toHaveLength(0);
+      expect((await getPendingChunks(db, 10)).map((c) => c.chunkId)).toEqual([
+        'hash-a:1',
+        'hash-a:2',
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('lists queue items that failed after retries', async () => {
+    const db = await openSiteDb(originOf('failed-items'));
+    try {
+      const failed = { url: 'https://a.test/failed', depth: 0, status: 'failed', attempts: 3 } satisfies CrawlQueueItem;
+      const queued = { url: 'https://a.test/queued', depth: 0, status: 'queued', attempts: 1 } satisfies CrawlQueueItem;
+      await updateQueueItem(db, failed);
+      await updateQueueItem(db, queued);
+      expect(await getFailedQueueItems(db)).toEqual([failed]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('requeues done items for a refresh run and leaves other statuses alone', async () => {
+    const db = await openSiteDb(originOf('refresh-requeue'));
+    try {
+      const done = { url: 'https://a.test/done', depth: 0, status: 'done', attempts: 1 } satisfies CrawlQueueItem;
+      const queued = { url: 'https://a.test/queued', depth: 0, status: 'queued', attempts: 0 } satisfies CrawlQueueItem;
+      const failed = { url: 'https://a.test/failed', depth: 0, status: 'failed', attempts: 3 } satisfies CrawlQueueItem;
+      await updateQueueItem(db, done);
+      await updateQueueItem(db, queued);
+      await updateQueueItem(db, failed);
+
+      expect(await requeueDoneForRefresh(db)).toBe(1);
+      expect(await countQueue(db, 'queued')).toBe(2);
+      // dequeueNext makes no ordering promise; drain and assert on the set.
+      const dequeued: CrawlQueueItem[] = [];
+      for (let i = 0; i < 2; i++) {
+        const item = await dequeueNext(db);
+        if (!item) break;
+        dequeued.push(item);
+        await updateQueueItem(db, { ...item, status: 'done' });
+      }
+      expect(dequeued.map((i) => i.url).sort()).toEqual(['https://a.test/done', 'https://a.test/queued']);
+      expect(await getFailedQueueItems(db)).toEqual([failed]);
     } finally {
       db.close();
     }

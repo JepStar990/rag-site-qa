@@ -37,3 +37,10 @@ export function clampPoliteness(ms: number): number {
 export function estimateSiteSize(chunkCount: number): number {
   return chunkCount * 3500;
 }
+
+/** Human-readable byte count for the popup storage readout. */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}

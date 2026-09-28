@@ -81,6 +81,9 @@ export const DEFAULT_SETTINGS: Settings = {
 /** Both supported embedding models are 384-dim, so vectors are interchangeable. */
 export const EMBED_DIM = 384;
 
+/** Embedding batch size (docs/03): each batch is embedded and written before the next starts. */
+export const EMBED_BATCH_SIZE = 32;
+
 /* IndexedDB records. One database per origin, named site-<hash16> (ADR-0005). */
 
 export interface PageRecord {

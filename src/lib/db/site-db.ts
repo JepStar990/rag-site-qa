@@ -19,7 +19,11 @@ export const STORES = {
 } as const;
 
 export async function openSiteDb(origin: string): Promise<IDBDatabase> {
-  const name = await siteDbName(origin);
+  return openSiteDbNamed(await siteDbName(origin));
+}
+
+/** Opens a site database by its hashed name (the runtime host knows only the name, 03). */
+export async function openSiteDbNamed(name: string): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(name, DB_VERSION);
     req.onupgradeneeded = () => {
@@ -109,6 +113,110 @@ export function countChunksByPage(db: IDBDatabase): Promise<Map<string, number>>
     };
     req.onerror = () => reject(req.error);
   });
+}
+
+/**
+ * Write a page and its chunks in one transaction. Kill-safe crawl writes
+ * (docs/03): a kill mid-write rolls the whole transaction back, so a page
+ * record can never exist without its chunks.
+ */
+export async function putPageAndChunks(db: IDBDatabase, page: PageRecord, chunks: ChunkRecord[]): Promise<void> {
+  const tx = db.transaction([STORES.pages, STORES.chunks], 'readwrite');
+  tx.objectStore(STORES.pages).put(page);
+  const chunkStore = tx.objectStore(STORES.chunks);
+  for (const chunk of chunks) chunkStore.put(chunk);
+  await txDone(tx);
+}
+
+/**
+ * Merge embedding vectors into existing chunk records. Reads each record and
+ * writes back only the `vec` field, so text/tokens/heading metadata written
+ * during the crawl phase are never clobbered. The transaction commit is the
+ * per-batch embedding checkpoint (docs/03): a kill costs at most one
+ * un-checkpointed batch.
+ */
+export async function putChunkVecs(db: IDBDatabase, updates: { chunkId: string; vec: Float32Array }[]): Promise<void> {
+  const tx = db.transaction(STORES.chunks, 'readwrite');
+  const store = tx.objectStore(STORES.chunks);
+  for (const { chunkId, vec } of updates) {
+    const existing = await asPromise(store.get(chunkId));
+    if (existing) store.put({ ...existing, vec });
+  }
+  await txDone(tx);
+}
+
+/** First `limit` chunks still awaiting embedding (empty `vec` is the pending marker). */
+export function getPendingChunks(db: IDBDatabase, limit: number): Promise<ChunkRecord[]> {
+  return new Promise((resolve, reject) => {
+    const out: ChunkRecord[] = [];
+    const req = db.transaction(STORES.chunks, 'readonly').objectStore(STORES.chunks).openCursor();
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor || out.length >= limit) {
+        resolve(out);
+        return;
+      }
+      const value = cursor.value as ChunkRecord;
+      if (value.vec.length === 0) out.push(value);
+      cursor.continue();
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export function countPendingChunks(db: IDBDatabase): Promise<number> {
+  return new Promise((resolve, reject) => {
+    let count = 0;
+    const req = db.transaction(STORES.chunks, 'readonly').objectStore(STORES.chunks).openCursor();
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) {
+        resolve(count);
+        return;
+      }
+      const value = cursor.value as ChunkRecord;
+      if (value.vec.length === 0) count++;
+      cursor.continue();
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+/** Queue items that gave up after repeated failures (sources view). */
+export function getFailedQueueItems(db: IDBDatabase): Promise<CrawlQueueItem[]> {
+  return asPromise(db.transaction(STORES.queue, 'readonly').objectStore(STORES.queue).index('status').getAll('failed'));
+}
+
+/**
+ * Reset `done` items back to `queued` for an incremental refresh run
+ * (state machine `ready -> crawling`). Unlike `enqueueItems`, which never
+ * overwrites `done` items, this makes already-indexed pages fetchable again
+ * so ETag/content-hash checks can skip unchanged pages (docs/03).
+ */
+export async function requeueDoneForRefresh(db: IDBDatabase): Promise<number> {
+  const urls = await new Promise<string[]>((resolve, reject) => {
+    const out: string[] = [];
+    const req = db.transaction(STORES.queue, 'readonly').objectStore(STORES.queue).index('status').openKeyCursor('done');
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) {
+        resolve(out);
+        return;
+      }
+      out.push(cursor.primaryKey as string);
+      cursor.continue();
+    };
+    req.onerror = () => reject(req.error);
+  });
+
+  const tx = db.transaction(STORES.queue, 'readwrite');
+  const store = tx.objectStore(STORES.queue);
+  for (const url of urls) {
+    const item = await asPromise(store.get(url));
+    if (item && item.status === 'done') store.put({ ...item, status: 'queued' });
+  }
+  await txDone(tx);
+  return urls.length;
 }
 
 /** Remove a page record and its chunks (refresh path). */

@@ -6,6 +6,9 @@ import { defineManifest } from '@crxjs/vite-plugin';
  *   is the runtime host, kept alive by extension-API heartbeats per ADR-0001)
  * - `background.scripts` (event page) instead of `service_worker`; Firefox
  *   MV3 has no service workers and no background `type` field
+ * - CSP keeps `script-src 'self'` without `'wasm-unsafe-eval'`: Firefox does
+ *   not implement the keyword (web-ext flags it) and does not require it for
+ *   WASM compilation (07)
  * - stable extension id and min version via browser_specific_settings
  */
 export const firefoxManifest = defineManifest({
@@ -23,7 +26,7 @@ export const firefoxManifest = defineManifest({
   host_permissions: ['https://api.deepseek.com/*'],
   content_security_policy: {
     extension_pages:
-      "script-src 'self'; object-src 'none'; connect-src https://api.deepseek.com; base-uri 'none'; frame-ancestors 'none';",
+      "script-src 'self'; object-src 'none'; connect-src 'self' https://api.deepseek.com; base-uri 'none'; frame-ancestors 'none';",
   },
   browser_specific_settings: {
     gecko: {
