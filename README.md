@@ -34,10 +34,12 @@ There is no backend. Crawling, embedding, retrieval, and vector storage all run 
 
 ```bash
 npm install
-npm run check   # typecheck + lint + test
+npm run check           # typecheck + lint + test
+npm run build           # both targets into dist-chromium/ and dist-firefox/
+npm run lint:firefox    # AMO linter on the Firefox build
 ```
 
-Extension build tooling lands in M1 (see roadmap). The current tree is the documentation-first deliverable of M0 plus the shared domain types and utilities that the docs specify.
+Load the extension unpacked: `chrome://extensions` -> Load unpacked -> `dist-chromium/` (Chromium family), or `about:debugging` -> This Firefox -> Load Temporary Add-on -> `dist-firefox/manifest.json` (Firefox). On first run, open SiteQA Settings, paste your DeepSeek API key, and use Test key to verify it.
 
 ## Privacy
 

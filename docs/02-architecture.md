@@ -34,7 +34,7 @@ C4Container
         Container(popup, "Popup UI", "Preact + TypeScript", "Chat, sources, index status")
         Container(options, "Options Page", "Preact + TypeScript", "BYOK key entry, model and budget settings")
         Container(sw, "Background Service Worker", "TypeScript, MV3", "Thin router: message bus, crawl queue, IDB access")
-        Container(host, "Runtime Host", "TypeScript + transformers.js", "Embedding and LLM streaming; offscreen document on Chromium, persistent background page on Firefox")
+        Container(host, "Runtime Host", "TypeScript + transformers.js", "Embedding and LLM streaming; offscreen document on Chromium, background event page with API-call heartbeats on Firefox")
         ContainerDb(idb, "IndexedDB", "site-hash16 per origin", "Pages, chunks, vectors, crawl queue, meta")
         ContainerDb(store, "chrome.storage.local", "Extension storage", "API key and settings only")
     }
@@ -53,7 +53,7 @@ C4Container
 
 Two platform facts shape this split (ADR-0001, ADR-0008):
 
-- A plain in-flight `fetch` does not keep the MV3 service worker alive; it is killed after ~30s idle and a streaming LLM response can exceed that. Both embedding inference and LLM streaming therefore live in a runtime host — an offscreen document on Chromium, a persistent background page on Firefox (ADR-0001) — with streamed chunks relayed to the popup over ports. Each relayed message resets idle timers (Chrome 114+).
+- A plain in-flight `fetch` does not keep the MV3 service worker alive; it is killed after ~30s idle and a streaming LLM response can exceed that. Both embedding inference and LLM streaming therefore live in a runtime host — an offscreen document on Chromium, the background event page itself on Firefox, kept alive by the extension-API calls the job makes anyway (ADR-0001) — with streamed chunks relayed to the popup over ports. Each relayed message resets idle timers (Chrome 114+).
 - Closing the popup kills popup-initiated fetches. Nothing the user's answer depends on may run in the popup itself.
 
 The service worker stays a thin router: it owns the message bus, the crawl queue, and IndexedDB access, and delegates CPU-heavy or long-lived work to the offscreen document.
@@ -145,7 +145,7 @@ graph TD
 
 | Decision | ADR |
 |---|---|
-| Runtime host: offscreen document on Chromium, persistent background page on Firefox | [ADR-0001](adr/0001-runtime-host-execution.md) |
+| Runtime host: offscreen document on Chromium, background event page with API-call heartbeats on Firefox | [ADR-0001](adr/0001-runtime-host-execution.md) |
 | Model bundled in the package, not CDN-loaded | [ADR-0002](adr/0002-bundled-model-vs-cdn.md) |
 | Brute-force cosine now, HNSW later | [ADR-0003](adr/0003-brute-force-vs-hnsw.md) |
 | Readability plus custom heading-aware splitter | [ADR-0004](adr/0004-readability-custom-splitter.md) |

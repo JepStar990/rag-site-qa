@@ -87,6 +87,7 @@ sequenceDiagram
 - The key travels SW to the runtime host over the port for the lifetime of one request only; it is never stored in host state and never appears in any `runtime.onMessage` payload.
 - The popup renders deltas as sanitized markdown as they arrive; citation validation runs on the complete answer.
 - If the popup is closed mid-stream, the SW finishes the stream to completion (bounded by the output cap), persists the transcript, and the user can reopen the popup to read it.
+- Firefox: the runtime host is the background event page (ADR-0001). Each chunk relay and each `chrome.storage.session` delta write is a parent extension-API call, which resets Firefox's event-page idle timer (Bug 1844041), so the stream stays alive with or without the popup open.
 
 ## BYOK onboarding UX
 

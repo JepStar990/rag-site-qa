@@ -1,0 +1,99 @@
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 16px;
+  font-family: system-ui, sans-serif;
+  font-size: 14px;
+}
+
+h1 {
+  font-size: 20px;
+}
+
+h2 {
+  font-size: 16px;
+  margin-top: 24px;
+}
+
+.muted {
+  opacity: 0.7;
+}
+
+.status-ok {
+  color: #1a7f37;
+}
+
+.status-err {
+  color: #c62828;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0;
+}
+
+.field > span {
+  font-weight: 600;
+}
+
+.field input,
+.field select {
+  font: inherit;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+  background: transparent;
+  max-width: 220px;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+fieldset {
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  border-radius: 8px;
+  margin: 12px 0;
+  padding: 12px;
+}
+
+legend {
+  font-weight: 600;
+  padding: 0 4px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+button {
+  font: inherit;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+  background: transparent;
+  cursor: pointer;
+}
+
+button.primary {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: white;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

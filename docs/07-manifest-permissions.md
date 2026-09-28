@@ -12,7 +12,7 @@ SiteQA ships two build targets from one codebase (ADR-0009): Chromium (Chrome, E
   "action": { "default_popup": "popup.html" },
   "options_page": "options.html",
   "background": { "service_worker": "background.js", "type": "module" },
-  "permissions": ["storage", "unlimitedStorage", "offscreen"],
+  "permissions": ["storage", "unlimitedStorage", "offscreen", "activeTab"],
   "optional_host_permissions": ["https://*/*", "http://*/*"],
   "host_permissions": ["https://api.deepseek.com/*"],
   "content_security_policy": {
@@ -25,19 +25,23 @@ SiteQA ships two build targets from one codebase (ADR-0009): Chromium (Chrome, E
 
 ```json
 {
-  "background": { "scripts": ["background.js"], "type": "module" },
-  "permissions": ["storage", "unlimitedStorage"],
+  "options_ui": { "page": "options.html", "open_in_tab": true },
+  "background": { "scripts": ["background.js"] },
+  "permissions": ["storage", "unlimitedStorage", "activeTab"],
   "browser_specific_settings": {
     "gecko": {
-      "id": "siteqa@example.invalid",
-      "strict_min_version": "121.0",
-      "background": { "persistent": true }
+      "id": "siteqa@rag-site-qa.dev",
+      "strict_min_version": "128.0"
     }
   }
 }
 ```
 
-Firefox has no `chrome.offscreen` API; the `offscreen` permission is stripped by the Firefox build target. Instead, `browser_specific_settings.gecko.background.persistent` opts the background script out of event-page unload, which is exactly the guarantee the offscreen document provides on Chromium (ADR-0001). Unknown permissions are never shipped to a platform.
+Firefox has no `chrome.offscreen` API; the `offscreen` permission is stripped by the Firefox build target. Firefox MV3 backgrounds are always event pages (no persistence manifest key exists), so the background event page itself acts as the runtime host: long jobs keep it alive through the extension-API calls they make anyway (chunk relays and `chrome.storage.session` progress writes reset Firefox's idle timer — Bug 1844041). See ADR-0001. Unknown permissions are never shipped to a platform.
+
+The Firefox target uses `options_ui` with `open_in_tab` (`options_page` only landed in Firefox 126) and sets `strict_min_version: 128.0` because `optional_host_permissions` arrived in Firefox 128. Both keys are verified by `web-ext lint` in CI.
+
+One known, accepted `web-ext lint` warning: `UNSAFE_VAR_ASSIGNMENT` on the bundled Preact core. Preact ships an `innerHTML` assignment for its `dangerouslySetInnerHTML` API; SiteQA code never sets `innerHTML` or uses that API, and model output is rendered sanitized via marked + DOMPurify (04). The warning is therefore a vendor-code false positive and does not block submission (AMO treats it as a warning).
 
 ## Permission justification
 
@@ -45,7 +49,8 @@ Firefox has no `chrome.offscreen` API; the `offscreen` permission is stripped by
 |---|---|---|
 | `storage` | Settings and BYOK key in `chrome.storage.local` | No `storage.sync` usage; key is never synced |
 | `unlimitedStorage` | Per-site vector indexes in IndexedDB exceed the default extension quota | Silent permission, no prompt |
-| `offscreen` (Chromium only) | Host for local embedding inference and LLM streaming; the MV3 service worker cannot hold a live stream | Stripped from the Firefox build |
+| `offscreen` (Chromium only) | Host for local embedding inference and LLM streaming; the MV3 service worker cannot hold a live stream | Stripped from the Firefox build; Firefox uses the background event page as the host (ADR-0001) |
+| `activeTab` | Read-only access to the active tab on a user click: lets the popup identify the current site (`tab.url`) without persistent tab access | No `tabs` permission; crawl access still requires a separate, explicit `optional_host_permissions` grant per site |
 | `optional_host_permissions: http(s)://*/*` | Per-site crawl access, granted by the user per site via an optional-permission prompt when they activate SiteQA on a site | The extension works with zero host permissions granted; every grant is user-mediated and revocable |
 | `host_permissions: https://api.deepseek.com/*` | Direct API calls to DeepSeek | Narrow to one host; CORS for the offscreen/runtime host context |
 
@@ -55,9 +60,8 @@ Firefox has no `chrome.offscreen` API; the `offscreen` permission is stripped by
 |---|---|
 | `content_scripts` in the manifest | Content scripts can read `chrome.storage`; a persistent injected script would be a key-exfiltration surface (04). A minimal script is injected on demand via `scripting` instead — and only on granted origins |
 | `externally_connectable` | Would let web pages message the extension; not needed, strictly increases attack surface |
-| `activeTab` | Gives access to the current tab's origin implicitly; SiteQA wants explicit per-site grants so the user controls what is indexed |
-| `tabs` | Tab URLs are obtained via the `page-info` message from the injected script; no global tab access needed |
-| `scripting` as a named permission | Injected on demand under `activeTab`-style optional grants via the `scripting` API with `optional_host_permissions`; listed implicitly, but the injected script has zero storage access |
+| `tabs` | The popup reads only the active tab's URL, which `activeTab` provides on a user click; no global tab access needed |
+| `scripting` / injected scripts | No content scripts exist in v1: `activeTab` covers the popup's URL read. If a future feature needs page injection, the injected script will have zero storage access and one message type (04) |
 | `<all_urls>` | Broader than `http(s)://*/*`; file and chrome schemes are never crawlable |
 | Cookies, history, bookmarks, downloads | None are touched |
 

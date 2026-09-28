@@ -64,6 +64,8 @@ Vector storage is `Float32Array` (not `number[]`) — 4 bytes per dimension, str
 | `caps` | `{maxPages, maxDepth, maxChunksPerSite, politenessMs, chunkTokens, chunkOverlapTokens}` | Crawl and chunk bounds |
 | `retrieval` | `{topK, contextTokenBudget}` | Retrieval budget |
 
+`chrome.storage.session` (in-memory only, cleared on browser restart) holds transient stream state while a QA answer is in flight: buffered answer deltas keyed by `requestId` and per-batch indexing progress. It is never a source of truth — on restart, incomplete answers are discarded and indexing resumes from IndexedDB checkpoints. On Firefox it doubles as the heartbeat medium that keeps the background event page alive during long jobs (ADR-0001).
+
 ## Storage budget
 
 | Item | Size |
