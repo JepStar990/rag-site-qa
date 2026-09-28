@@ -30,6 +30,8 @@ export interface BudgetConfig {
   monthlyLimitUsd: number;
   /** Approximate spend this month, tracked locally from usage fields in responses. */
   spentThisMonthUsd: number;
+  /** Month the spend counter belongs to ('YYYY-MM'). Null until the first QA request. */
+  spendMonth: string | null;
   /** USD per 1M tokens, user-editable (prices change; see docs/06-llm-integration.md). */
   pricePerMTokens: { input: number; output: number };
 }
@@ -62,7 +64,9 @@ export const DEFAULT_SETTINGS: Settings = {
   budget: {
     monthlyLimitUsd: 5,
     spentThisMonthUsd: 0,
-    pricePerMTokens: { input: 0.07, output: 0.28 },
+    spendMonth: null,
+    // deepseek-v4-flash off-peak pricing as of 2026-08 (docs/06); user-editable.
+    pricePerMTokens: { input: 0.22, output: 0.66 },
   },
   caps: {
     maxPages: 1000,
@@ -138,3 +142,38 @@ export interface SourceInfo {
   chunkCount: number;
   crawledAt: number;
 }
+
+/* QA domain types (docs/03 QA flow, docs/06). */
+
+/** Messages sent to DeepSeek; SiteQA is single-shot, so roles are fixed. */
+export interface ChatMessage {
+  role: 'system' | 'user';
+  content: string;
+}
+
+/** Token usage reported by the API on the final stream chunk. */
+export interface QaUsage {
+  promptTokens: number;
+  completionTokens: number;
+}
+
+/** A validated `[n]` citation resolved to its stored provenance (docs/04). */
+export interface QaCitation {
+  index: number;
+  url: string;
+  title: string;
+  headingPath: string;
+}
+
+/**
+ * Mapped QA failure kinds (docs/06 error matrix). `busy` and the pre-flight
+ * guard failures travel as `ok: false` message responses instead.
+ */
+export type QaErrorReason =
+  | 'invalid_key'
+  | 'no_balance'
+  | 'rate_limited'
+  | 'provider'
+  | 'network'
+  | 'bad_request'
+  | 'too_large';

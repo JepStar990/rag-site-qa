@@ -36,7 +36,7 @@ DeepSeek's model IDs were in transition in 2026: the legacy `deepseek-chat` and 
 | `deepseek-flash` | Newer alias | Reported to route to V4.1; verified at implementation time (M3) |
 | Custom ID | User-entered | For future models without an extension update |
 
-**Thinking mode.** V4 models default to thinking ON. SiteQA sends an explicit `extra_body.thinking` toggle on every request so behavior never depends on provider defaults. While thinking is on, DeepSeek ignores `temperature` and `top_p` — the settings UI disables those fields when thinking is enabled. The exact `extra_body` schema must be verified against the live DeepSeek docs during M3 implementation; the options page's test-key call is the verification vehicle.
+**Thinking mode.** V4 models default to thinking ON. SiteQA sends an explicit `extra_body.thinking` toggle on every request so behavior never depends on provider defaults. The schema was verified against the live DeepSeek docs during M3 ([Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode)): `extra_body: {"thinking": {"type": "enabled" | "disabled"}}`. While thinking is on, DeepSeek ignores `temperature` and `top_p` — SiteQA omits `temperature` from the request body entirely in that mode, and the settings UI disables those fields. Thinking deltas arrive in the stream as `reasoning_content` and are ignored; SiteQA renders the answer content only.
 
 All model configuration (`modelId`, `thinking`, `temperature`, `maxOutputTokens`) is user-facing state in `modelPrefs` (05).
 
@@ -52,15 +52,15 @@ All model configuration (`modelId`, `thinking`, `temperature`, `maxOutputTokens`
 | 500 / 502 / 503 | Provider-side failure | Yes, with backoff | "DeepSeek is having trouble. Retrying." |
 | Network error / timeout | Local connectivity | Yes | "Could not reach DeepSeek. Check your connection." |
 
-**Retry policy:** exponential backoff with jitter (1s, 2s, 4s), maximum 3 attempts, only while nothing has streamed yet — a partially streamed answer is never re-sent (duplicate billing). Persistent failure ends the stream with the mapped error, which the popup shows as a dismissible banner.
+**Retry policy:** exponential backoff with jitter (1s, 2s, 4s, ±20%), maximum 3 attempts, only while nothing has streamed yet — a partially streamed answer is never re-sent (duplicate billing). Each retry is surfaced to the popup as `answer-retry`. Persistent failure ends the stream with the mapped error, which the popup shows as a dismissible banner. A 30s connect timeout (AbortController) bounds every attempt.
 
 ## Token accounting and spend control
 
 - **Budgets per request:** assembled context capped at `contextTokenBudget` (8000); `maxOutputTokens` (2048) bounds generation. Both are settings the user can lower.
-- **Concurrency:** one QA request in flight at a time; new asks queue behind it in the popup.
-- **Spend tracking:** every response's `usage` (prompt/completion tokens) is multiplied by the user-editable per-1M-token prices and added to `budget.spentThisMonthUsd`. Prices are user-editable because provider pricing changes; defaults are documented as estimates to confirm at M3.
+- **Concurrency:** one QA request in flight at a time (a single global slot in the SW); a concurrent ask is rejected as busy and the popup disables the Ask button while one runs.
+- **Spend tracking:** every response's `usage` (prompt/completion tokens) is multiplied by the user-editable per-1M-token prices and added to `budget.spentThisMonthUsd`. A response without `usage` counts as zero cost (no estimation). Defaults are flash off-peak pricing (2026-08): $0.22 input / $0.66 output per 1M; pro is $0.66 / $1.98. The counter is stamped with `budget.spendMonth` and resets when the local calendar month changes; the SW is the only writer of both fields (05).
 - **Spend cap:** when `spentThisMonthUsd` reaches `monthlyLimitUsd` (default $5), new requests are blocked with a reset-time message. The cap is an estimate — DeepSeek has no server-side cap for BYOK keys; this is a local guardrail, not a guarantee.
-- **Usage readout:** the popup footer shows tokens and estimated cost of the last answer, plus month-to-date spend.
+- **Usage readout:** the popup footer shows tokens and estimated cost of the last answer, plus month-to-date spend against the cap.
 
 ## Streaming protocol (extension-internal)
 
@@ -86,7 +86,7 @@ sequenceDiagram
 
 - The key travels SW to the runtime host over the port for the lifetime of one request only; it is never stored in host state and never appears in any `runtime.onMessage` payload.
 - The popup renders deltas as sanitized markdown as they arrive; citation validation runs on the complete answer.
-- If the popup is closed mid-stream, the SW finishes the stream to completion (bounded by the output cap), persists the transcript, and the user can reopen the popup to read it.
+- If the popup is closed mid-stream, the SW finishes the stream to completion (bounded by the output cap), persists the transcript to `storage.session` under `qa:<origin>` (05), and the user can reopen the popup to read it — a reopened popup restores the transcript mid-stream and keeps appending deltas.
 - Firefox: the runtime host is the background event page (ADR-0001). Each chunk relay and each `chrome.storage.session` delta write is a parent extension-API call, which resets Firefox's event-page idle timer (Bug 1844041), so the stream stays alive with or without the popup open.
 
 ## BYOK onboarding UX

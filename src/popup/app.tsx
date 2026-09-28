@@ -5,6 +5,7 @@ import { MSG, PORT } from '../shared/msg-protocol';
 import type { FailedUrl, Message, MessageResponse, ProgressPortEvent, SiteStatusMeta } from '../shared/msg-protocol';
 import type { SiteIndexStatus, SourceInfo } from '../shared/types';
 import { formatBytes } from '../shared/utils';
+import { QaView, onQaPortEvent, resetQa, restoreQaSession, setQaOrigin } from './qa-view';
 import './popup.css';
 
 type SiteState = { origin: string; status: SiteIndexStatus | 'inactive' | 'unsupported' };
@@ -36,10 +37,12 @@ async function loadSources(origin: string): Promise<void> {
 
 async function refresh(): Promise<void> {
   error.value = null;
+  resetQa();
   const [tab] = await browserApi.tabs.query({ active: true, currentWindow: true });
   const url = tab?.url;
   if (!url) {
     site.value = null;
+    setQaOrigin(null);
     error.value = 'Could not read the current tab.';
     return;
   }
@@ -49,12 +52,14 @@ async function refresh(): Promise<void> {
     parsed = new URL(url);
   } catch {
     site.value = { origin: '', status: 'unsupported' };
+    setQaOrigin(null);
     return;
   }
   tabUrl.value = url;
 
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
     site.value = { origin: parsed.origin, status: 'unsupported' };
+    setQaOrigin(null);
     return;
   }
 
@@ -63,9 +68,15 @@ async function refresh(): Promise<void> {
     site.value = { origin: parsed.origin, status: res.status };
     meta.value = res.meta;
     indexing.value = res.status === 'crawling' || res.status === 'embedding';
-    if (res.status === 'ready') await loadSources(parsed.origin);
+    if (res.status === 'ready') {
+      setQaOrigin(parsed.origin);
+      await Promise.all([loadSources(parsed.origin), restoreQaSession(parsed.origin)]);
+    } else {
+      setQaOrigin(null);
+    }
   } else {
     site.value = { origin: parsed.origin, status: 'inactive' };
+    setQaOrigin(null);
   }
 }
 
@@ -107,6 +118,8 @@ function onProgressEvent(value: unknown): void {
     progress.value = null;
     error.value = event.reason;
     void refresh();
+  } else if (event.type.startsWith('answer-')) {
+    onQaPortEvent(event);
   }
 }
 
@@ -273,6 +286,7 @@ export function App() {
           {!indexing.value && current.status === 'ready' && (
             <>
               <p class="status-ok">Site indexed.</p>
+              <QaView />
               <SourcesView />
               <IndexButton />
             </>

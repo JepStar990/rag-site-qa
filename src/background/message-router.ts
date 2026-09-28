@@ -8,6 +8,7 @@
 import { isTrustedSender, MSG, parseMessage } from '../shared/msg-protocol';
 import type { MessageResponse } from '../shared/msg-protocol';
 import { publicSettings } from '../shared/settings';
+import { askSite } from './handlers/ask-site';
 import { indexSite } from './handlers/index-site';
 import { getSiteStatusInfo } from './handlers/site-status';
 import { listSourcesInfo } from './handlers/sources';
@@ -40,6 +41,12 @@ export async function handleMessage(
       const result = await indexSite(message.origin, message.url, hub);
       if (result === 'permission-denied') return { ok: false, error: 'permission' };
       return { ok: true, kind: 'indexing', origin: message.origin };
+    }
+    case MSG.ask: {
+      const result = await askSite(message.origin, message.question, message.requestId, hub);
+      if (result === 'started') return { ok: true, kind: 'asking', origin: message.origin };
+      if (result === 'permission-denied') return { ok: false, error: 'permission' };
+      return { ok: false, error: result };
     }
   }
 }

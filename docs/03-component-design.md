@@ -44,20 +44,22 @@ sequenceDiagram
     participant D as DeepSeek API
 
     U->>P: ask a question
-    P->>SW: ask {origin, question}
-    SW->>SW: validate sender and schema, check key
-    SW->>IDB: top-k cosine over vectors, load texts
+    P->>SW: ask-site {origin, question, requestId}
+    SW->>SW: validate sender and schema, check key and spend cap
+    SW->>RH: embed-query {question}
+    RH-->>SW: query vector (same embedder)
+    SW->>IDB: top-k dot-product over vectors, load texts
     SW->>SW: assemble prompt with guardrails and budget
     SW->>RH: start-stream {messages, key, prefs}
     RH->>D: POST /chat/completions with stream=true
     loop SSE chunks
         D-->>RH: delta tokens
-        RH-->>SW: relay chunk over port
-        SW-->>P: append token (sanitized render)
+        RH-->>SW: stream-chunk {requestId, delta}
+        SW-->>P: answer-token (sanitized render)
     end
-    RH-->>SW: stream done {usage tokens}
+    RH-->>SW: stream-done {usage tokens}
     SW->>IDB: add usage to budget state
-    SW-->>P: answer complete {citations}
+    SW-->>P: answer-done {answer, citations, usage, costUsd}
 ```
 
 ## Crawl job state machine
@@ -83,7 +85,7 @@ Jobs survive kills because both the crawl queue and embedding checkpoints are pe
 
 ## Message bus and protocol
 
-All communication between contexts goes through a validated message bus in the service worker. There is no `externally_connectable` (04). One-shot requests use `runtime.sendMessage`; two continuous channels use named runtime ports with the same sender gate (`isTrustedPort`): `siteqa-progress` (popup subscribes per origin, SW broadcasts `index-progress` / `index-ready` / `index-failed`) and `siteqa-host` (SW -> runtime host batches, correlated on `batchId`).
+All communication between contexts goes through a validated message bus in the service worker. There is no `externally_connectable` (04). One-shot requests use `runtime.sendMessage`; two continuous channels use named runtime ports with the same sender gate (`isTrustedPort`): `siteqa-progress` (popup subscribes per origin, SW broadcasts `index-progress` / `index-ready` / `index-failed` / `answer-*` events, filtered by origin and correlated on `requestId`) and `siteqa-host` (SW -> runtime host embed batches and QA streams, correlated on `batchId` / `requestId`).
 
 | Message | Direction | Payload | Status |
 |---|---|---|---|
@@ -95,10 +97,18 @@ All communication between contexts goes through a validated message bus in the s
 | `index-ready` | SW -> popup | `{origin, chunkCount, sizeEstimateBytes}` | M2 |
 | `index-failed` | SW -> popup | `{origin, reason}` | M2 |
 | `list-sources` | popup -> SW | `{origin}` | M2 |
-| `ask` | popup -> SW | `{origin, question, requestId}` | M3 |
+| `ask-site` | popup -> SW | `{origin, question, requestId}` | M3 |
 | `stream-chunk` | runtime host -> SW | `{requestId, delta}` | M3 |
-| `stream-done` | runtime host -> SW | `{requestId, usage}` | M3 |
-| `answer-token` / `answer-done` | SW -> popup | `{requestId, delta or citations}` | M3 |
+| `stream-retry` | runtime host -> SW | `{requestId}` (backoff retry before any content, 06) | M3 |
+| `stream-done` | runtime host -> SW | `{requestId, usage}` (null when the provider omits usage) | M3 |
+| `stream-error` | runtime host -> SW | `{requestId, error}` (mapped per the 06 matrix) | M3 |
+| `answer-token` | SW -> popup | `{requestId, origin, delta}` | M3 |
+| `answer-retry` | SW -> popup | `{requestId, origin}` | M3 |
+| `answer-done` | SW -> popup | `{requestId, origin, answer, citations, usage, costUsd, spentThisMonthUsd}` | M3 |
+| `answer-error` | SW -> popup | `{requestId, origin, reason, message}` | M3 |
+| `embed-query` | SW -> runtime host | `{batchId, texts}` (query embedding, 1-8 texts) | M3 |
+| `embed-query-done` | runtime host -> SW | `{batchId, vecs}` | M3 |
+| `embed-query-error` | runtime host -> SW | `{batchId, error}` | M3 |
 | `embed-batch` | SW -> runtime host | `{dbName, batchId, chunks}` | M2 |
 | `embed-done` | runtime host -> SW | `{dbName, batchId, embedded}` | M2 |
 | `embed-error` | runtime host -> SW | `{dbName, batchId, error}` | M2 |
@@ -126,7 +136,7 @@ Validation rules, applied in order for every incoming message:
 
 ## Embedder (runtime host)
 
-- transformers.js v3 loads the bundled `onnx-community/bge-small-en-v1.5` Q8 model (~34MB, 384-dim). WebGPU used when `navigator.gpu` exists (Chrome 113+); otherwise single-threaded WASM.
+- transformers.js 4.3.0 loads the bundled `Xenova/bge-small-en-v1.5` Q8 model (~34MB, 384-dim). WebGPU used when `navigator.gpu` exists (Chrome 113+); otherwise single-threaded WASM.
 - Batches of 32 chunk texts; each batch is embedded, written to IndexedDB, then check pointed before the next batch starts.
 - Runtime host lifecycle (ADR-0001): on Chromium, created on demand with reason `WORKERS` after a `chrome.offscreen.hasDocument()` check (only one offscreen document may exist), retained while a port to the SW is open, closed when idle. On Firefox, the host is the background event page itself; every batch checkpoint and progress write is a parent extension-API call that resets the idle timer (Bug 1844041).
 
@@ -134,22 +144,23 @@ Validation rules, applied in order for every incoming message:
 
 - One database per origin: `site-` + first 16 hex chars of SHA-256(origin) (`siteDbName`). Deleting a site closes and deletes one database.
 - Stores: `pages` (keyed by urlHash), `chunks` (keyed by chunkId, index on urlHash), `crawl_queue` (keyed by url), `meta` (keyed by origin).
-- Search: load all vectors for the origin, normalize, dot-product against the query vector, keep top-k. At 10k chunks x 384-dim this is ~10ms in JS. The HNSW upgrade path exists past ~50k chunks (ADR-0003).
+- Search: load all vectors for the origin, dot-product against the query vector, keep top-k, then pack by context budget. The M3 benchmark (10k chunks, fake-indexeddb in Node — conservative versus native IDB) measured p99 253ms / mean 210ms end-to-end per query, under the p95 < 500ms gate (bench: `npm run bench:retrieval`). The HNSW upgrade path exists past ~50k chunks (ADR-0003).
 
 ## Retriever and prompt assembler (service worker)
 
-- Query is embedded via the offscreen embedder (same model, one pass).
-- Top-k chunks are ordered by similarity and packed into the `<documents>` block while the token estimate stays under `contextTokenBudget` (8000); each chunk is prefixed with `[n] title | url | heading`.
+- Query is embedded via an `embed-query` frame on the host port (same embedder, one pass; 120s host timeout).
+- Top-k chunks are ordered by similarity and packed into the `<documents>` block while the token estimate stays under `contextTokenBudget` (8000); each chunk is prefixed with `[n] title | url | heading`. The last packed chunk is truncated by character ratio to respect the budget exactly; indices `[1..n]` are assigned after selection, and chunks without vectors (pending embedding) or without a page record are skipped.
 - The prompt template and its guardrails are specified in [04 — Security](04-security-threat-model.md#prompt-injection-defense).
 
 ## LLM streaming client (runtime host)
 
-- Receives `{messages, key, prefs}` from the SW, POSTs to `https://api.deepseek.com/chat/completions` with `stream: true`, and relays SSE deltas back to the SW over the port. Each relayed chunk resets MV3 idle timers.
+- Receives `{messages, key, prefs}` from the SW, POSTs to `https://api.deepseek.com/chat/completions` with `stream: true`, and relays SSE deltas back to the SW over the port (`stream-chunk` / `stream-retry` / `stream-done` / `stream-error`). Each relayed chunk resets MV3 idle timers.
+- Retries happen only before any content has streamed — a partially streamed answer is never re-sent (duplicate billing). The API key lives only in the fetch headers of the current request; it is never stored in host state.
 - Error mapping, retries, and token accounting are specified in [06 — LLM Integration](06-llm-integration.md).
 
 ## Popup UI
 
-States: `inactive` (site not granted), `indexing` (progress bar, page and chunk counts), `ready` (chat box, sources list, storage readout), `error` (banner with actionable message). On open, the popup reads the active tab's URL via `activeTab` (no `tabs` permission, 07) and asks the SW for the site status; the grant button requests the per-site optional host permission. M1 reaches `inactive`/`idle`; the remaining states arrive with M2/M3. The chat renders assistant output as sanitized markdown with `[n]` citation chips that expand to source URL and heading. Only the popup renders model output; nothing it renders can execute (marked + DOMPurify, 04).
+States: `inactive` (site not granted), `indexing` (progress bar, page and chunk counts), `ready` (QA chat, sources list, storage readout), `error` (banner with actionable message). On open, the popup reads the active tab's URL via `activeTab` (no `tabs` permission, 07) and asks the SW for the site status; the grant button requests the per-site optional host permission. M1 reaches `inactive`/`idle`; the remaining states arrive with M2/M3. The QA area is a question box plus Ask (Enter submits; disabled while an answer is in flight). Answer deltas stream in, correlated on `requestId`, and render as sanitized markdown with `[n]` citation chips that expand to source URL and heading. Mapped errors (401/402/429/5xx, 06) show as dismissible banners; key and spend errors link straight to options. A spend footer shows the last answer's tokens and cost plus month-to-date spend against the cap. Closing the popup mid-answer loses nothing: the transcript is buffered to `storage.session` per origin (05) and restored on reopen, mid-stream or complete. Only the popup renders model output; nothing it renders can execute (marked + DOMPurify, 04).
 
 ## Options page
 

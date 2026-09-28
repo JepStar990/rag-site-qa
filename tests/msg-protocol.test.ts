@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   isEmbedBatchFrame,
+  isEmbedQueryFrame,
+  isEmbedQueryResultFrame,
   isHostFrame,
+  isStartStreamFrame,
+  isStreamFrame,
   isValidOrigin,
   parseMessage,
   parsePortEvent,
@@ -138,5 +142,101 @@ describe('isHostFrame', () => {
     expect(isHostFrame({ type: 'embed-done', dbName: 'site-abc', batchId: 1 })).toBe(false);
     expect(isHostFrame({ type: 'embed-error', dbName: 'site-abc', batchId: 1, error: 5 })).toBe(false);
     expect(isHostFrame({ type: 'embed-done', dbName: 'site-abc' })).toBe(false);
+  });
+});
+
+describe('parseMessage ask-site', () => {
+  const ask = { type: MSG.ask, origin: 'https://example.com', question: 'what is this?', requestId: 'q123abc' };
+
+  it('parses a well-formed ask', () => {
+    expect(parseMessage(ask)).toEqual(ask);
+  });
+
+  it('trims the question and rejects empty or oversized ones', () => {
+    expect(parseMessage({ ...ask, question: '  hi  ' })).toEqual({ ...ask, question: 'hi' });
+    expect(parseMessage({ ...ask, question: '   ' })).toBeNull();
+    expect(parseMessage({ ...ask, question: 'x'.repeat(4001) })).toBeNull();
+    expect(parseMessage({ ...ask, question: 42 })).toBeNull();
+  });
+
+  it('rejects malformed requestIds and origins', () => {
+    expect(parseMessage({ ...ask, requestId: 'has spaces' })).toBeNull();
+    expect(parseMessage({ ...ask, requestId: '' })).toBeNull();
+    expect(parseMessage({ ...ask, requestId: 'x'.repeat(65) })).toBeNull();
+    expect(parseMessage({ ...ask, origin: 'https://example.com/path' })).toBeNull();
+    expect(parseMessage({ ...ask, origin: 'javascript:alert(1)' })).toBeNull();
+  });
+});
+
+describe('isEmbedQueryFrame', () => {
+  it('accepts a well-formed query embed request', () => {
+    expect(isEmbedQueryFrame({ type: 'embed-query', batchId: 2, texts: ['a question'] })).toBe(true);
+  });
+
+  it('rejects empty, oversized, or malformed text lists', () => {
+    expect(isEmbedQueryFrame({ type: 'embed-query', batchId: 2, texts: [] })).toBe(false);
+    expect(isEmbedQueryFrame({ type: 'embed-query', batchId: 2, texts: [''] })).toBe(false);
+    expect(isEmbedQueryFrame({ type: 'embed-query', batchId: 2, texts: Array.from({ length: 9 }, () => 't') })).toBe(false);
+    expect(isEmbedQueryFrame({ type: 'embed-query', batchId: '2', texts: ['t'] })).toBe(false);
+    expect(isEmbedQueryFrame({ type: 'embed-batch', batchId: 2, texts: ['t'] })).toBe(false);
+  });
+});
+
+describe('isEmbedQueryResultFrame', () => {
+  it('accepts embed-query-done with 384-dim vectors', () => {
+    const vec = new Float32Array(384).fill(0.1);
+    expect(isEmbedQueryResultFrame({ type: 'embed-query-done', batchId: 2, vecs: [vec] })).toBe(true);
+  });
+
+  it('rejects wrong-dimension vectors and error frames with bad shapes', () => {
+    expect(isEmbedQueryResultFrame({ type: 'embed-query-done', batchId: 2, vecs: [new Float32Array(10)] })).toBe(false);
+    expect(isEmbedQueryResultFrame({ type: 'embed-query-done', batchId: 2, vecs: [] })).toBe(false);
+    expect(isEmbedQueryResultFrame({ type: 'embed-query-done', batchId: 2, vecs: [['x']] })).toBe(false);
+    expect(isEmbedQueryResultFrame({ type: 'embed-query-error', batchId: 2, error: 5 })).toBe(false);
+    expect(isEmbedQueryResultFrame({ type: 'embed-query-error', batchId: 2, error: 'boom' })).toBe(true);
+  });
+});
+
+describe('isStartStreamFrame', () => {
+  const frame = {
+    type: 'start-stream',
+    requestId: 'q1',
+    apiKey: 'sk-key',
+    messages: [
+      { role: 'system', content: 'locked' },
+      { role: 'user', content: 'question' },
+    ],
+    modelPrefs: { modelId: 'deepseek-v4-flash', thinking: false, temperature: 0.3, maxOutputTokens: 2048 },
+  };
+
+  it('accepts a well-formed start-stream frame', () => {
+    expect(isStartStreamFrame(frame)).toBe(true);
+  });
+
+  it('rejects frames missing a key, messages, or prefs', () => {
+    expect(isStartStreamFrame({ ...frame, apiKey: '' })).toBe(false);
+    expect(isStartStreamFrame({ ...frame, messages: [{ role: 'user', content: 'x' }] })).toBe(false);
+    expect(isStartStreamFrame({ ...frame, messages: [{ role: 'assistant', content: 'x' }, ...frame.messages.slice(1)] })).toBe(false);
+    expect(isStartStreamFrame({ ...frame, modelPrefs: { modelId: '' } })).toBe(false);
+    expect(isStartStreamFrame({ ...frame, requestId: '' })).toBe(false);
+  });
+});
+
+describe('isStreamFrame', () => {
+  it('accepts chunk, retry, done (with and without usage), and error frames', () => {
+    expect(isStreamFrame({ type: 'stream-chunk', requestId: 'q1', delta: 'hi' })).toBe(true);
+    expect(isStreamFrame({ type: 'stream-retry', requestId: 'q1' })).toBe(true);
+    expect(isStreamFrame({ type: 'stream-done', requestId: 'q1', usage: null })).toBe(true);
+    expect(isStreamFrame({ type: 'stream-done', requestId: 'q1', usage: { promptTokens: 5, completionTokens: 2 } })).toBe(true);
+    expect(
+      isStreamFrame({ type: 'stream-error', requestId: 'q1', error: { reason: 'invalid_key', message: 'x' } }),
+    ).toBe(true);
+  });
+
+  it('rejects malformed usage, unknown error reasons, and foreign frames', () => {
+    expect(isStreamFrame({ type: 'stream-done', requestId: 'q1', usage: { promptTokens: 'a' } })).toBe(false);
+    expect(isStreamFrame({ type: 'stream-error', requestId: 'q1', error: { reason: 'haunted', message: 'x' } })).toBe(false);
+    expect(isStreamFrame({ type: 'stream-chunk', requestId: 'q1', delta: 5 })).toBe(false);
+    expect(isStreamFrame({ type: 'embed-batch', requestId: 'q1', delta: 'x' })).toBe(false);
   });
 });

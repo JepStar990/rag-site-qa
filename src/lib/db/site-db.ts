@@ -92,6 +92,11 @@ export function getChunksByUrlHash(db: IDBDatabase, urlHash: string): Promise<Ch
   return asPromise(db.transaction(STORES.chunks, 'readonly').objectStore(STORES.chunks).index('urlHash').getAll(urlHash));
 }
 
+/** All chunks of one origin in a single pass — the retriever's scan (docs/03). */
+export function getAllChunks(db: IDBDatabase): Promise<ChunkRecord[]> {
+  return asPromise(db.transaction(STORES.chunks, 'readonly').objectStore(STORES.chunks).getAll());
+}
+
 export function countChunks(db: IDBDatabase): Promise<number> {
   return asPromise(db.transaction(STORES.chunks, 'readonly').objectStore(STORES.chunks).count());
 }
