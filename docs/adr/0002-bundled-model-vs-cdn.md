@@ -13,7 +13,7 @@ Options considered:
 
 ## Decision
 
-Bundle the quantized model (`onnx-community/bge-small-en-v1.5` Q8, ~34MB, 384-dim, CLS pooling) in the package, shipped to both platforms. MiniLM-L6-v2 Q8 (~23MB, also 384-dim) remains an evaluated fallback if size pressure ever demands it; the two models are drop-in interchangeable because dimensions match.
+Bundle the quantized model in the package, shipped to both platforms. The pinned artifact is `Xenova/bge-small-en-v1.5` (the original transformers.js conversion of BAAI/bge-small-en-v1.5; the `onnx-community` repo no longer exists on the Hub), Q8, ~34MB, 384-dim, CLS pooling. `scripts/fetch-model.mjs` downloads the files into `public/models/` with size and sha256 pins — the quantized ONNX is pinned to the LFS `sha256` published by the Hugging Face API, the small tokenizer/config files to hashes of one inspected download. Model files are never committed. MiniLM-L6-v2 Q8 (~23MB, also 384-dim) remains an evaluated fallback if size pressure ever demands it; the two models are drop-in interchangeable because dimensions match.
 
 ## Consequences
 

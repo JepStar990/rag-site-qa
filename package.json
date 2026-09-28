@@ -13,7 +13,8 @@
     "build": "npm run build:chromium && npm run build:firefox",
     "build:chromium": "vite build --config vite.config.chromium.ts --outDir dist-chromium",
     "build:firefox": "vite build --config vite.config.firefox.ts --outDir dist-firefox",
-    "lint:firefox": "web-ext lint --source-dir dist-firefox"
+    "lint:firefox": "web-ext lint --source-dir dist-firefox",
+    "model:fetch": "node scripts/fetch-model.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "4.3.0",
