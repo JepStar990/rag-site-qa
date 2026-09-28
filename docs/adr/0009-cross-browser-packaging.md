@@ -4,12 +4,12 @@ Status: Accepted
 
 ## Context
 
-The product must run on Chromium-family browsers (Chrome, Edge, Brave, Opera) and Firefox. The platforms differ in: offscreen support (Chromium only), background registration (service worker vs scripts + `gecko.background.persistent`), the `browser.*` promise namespace (Firefox's native) vs `chrome.*` (Chromium's native, Firefox's compatible), and packaging (CRX/ZIP for Web Store, XPI via web-ext for AMO).
+The product must run on Chromium-family browsers (Chrome, Edge, Brave, Opera) and Firefox. The platforms differ in: offscreen support (Chromium only), background registration (service worker vs scripts event page), the `browser.*` promise namespace (Firefox's native) vs `chrome.*` (Chromium's native, Firefox's compatible), and packaging (CRX/ZIP for Web Store, XPI via web-ext for AMO).
 
 ## Decision
 
 - **One TypeScript codebase**, no runtime forks beyond the runtime-host switch (ADR-0001).
-- **Two manifest targets** from one Vite/crxjs pipeline: the Firefox target strips the `offscreen` permission, registers the background script with `browser_specific_settings.gecko.background.persistent`, and adds a stable extension ID (07).
+- **Two manifest targets** from one Vite/crxjs pipeline: the Firefox target strips the `offscreen` permission, registers the background as a scripts event page, switches `options_page` to `options_ui` (`open_in_tab: true`), and adds a stable extension ID with `strict_min_version: 128.0` (07).
 - **A minimal namespace shim** (`const browser = globalThis.browser ?? chrome`) instead of the webextension-polyfill dependency: the APIs used (storage, runtime ports, offscreen on Chromium, scripting injection) are promise-based on both platforms' `chrome.*`, so a dependency buys nothing.
 - **CI runs both targets**: Chromium lint plus `web-ext lint` and a Firefox smoke test from M1 (08).
 

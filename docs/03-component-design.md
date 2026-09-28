@@ -83,27 +83,29 @@ Jobs survive kills because both the crawl queue and embedding checkpoints are pe
 
 ## Message bus and protocol
 
-All communication between contexts goes through a validated message bus in the service worker. There is no `externally_connectable`, and content scripts never receive privileged messages (04).
+All communication between contexts goes through a validated message bus in the service worker. There is no `externally_connectable` (04).
 
-| Message | Direction | Payload |
-|---|---|---|
-| `index-site` | popup -> SW | `{origin, url}` |
-| `index-progress` | SW -> popup | `{origin, pages, chunks}` |
-| `index-ready` | SW -> popup | `{origin, chunkCount, sizeEstimateBytes}` |
-| `list-sources` | popup -> SW | `{origin}` |
-| `ask` | popup -> SW | `{origin, question, requestId}` |
-| `stream-chunk` | runtime host -> SW | `{requestId, delta}` |
-| `stream-done` | runtime host -> SW | `{requestId, usage}` |
-| `answer-token` / `answer-done` | SW -> popup | `{requestId, delta or citations}` |
-| `embed-batch` | SW -> runtime host | `{dbName, chunks}` |
-| `embed-done` | runtime host -> SW | `{dbName, checkpoint}` |
-| `page-info` | injected script -> SW | `{title, url}` (the only content-script message) |
+| Message | Direction | Payload | Status |
+|---|---|---|---|
+| `get-settings` | options/popup -> SW | — | M1 |
+| `save-settings` | options -> SW | `{settings}` (sanitized server-side; `apiKey` and spend never accepted) | M1 |
+| `get-site-status` | popup -> SW | `{origin}` | M1 |
+| `index-site` | popup -> SW | `{origin, url}` | M2 |
+| `index-progress` | SW -> popup | `{origin, pages, chunks}` | M2 |
+| `index-ready` | SW -> popup | `{origin, chunkCount, sizeEstimateBytes}` | M2 |
+| `list-sources` | popup -> SW | `{origin}` | M2 |
+| `ask` | popup -> SW | `{origin, question, requestId}` | M3 |
+| `stream-chunk` | runtime host -> SW | `{requestId, delta}` | M3 |
+| `stream-done` | runtime host -> SW | `{requestId, usage}` | M3 |
+| `answer-token` / `answer-done` | SW -> popup | `{requestId, delta or citations}` | M3 |
+| `embed-batch` | SW -> runtime host | `{dbName, chunks}` | M2 |
+| `embed-done` | runtime host -> SW | `{dbName, checkpoint}` | M2 |
 
 Validation rules, applied in order for every incoming message:
 
-1. `sender.id === chrome.runtime.id` for extension contexts; for injected scripts also `sender.tab.url` origin in the granted set and `sender.frameId === 0`.
+1. `sender.id === chrome.runtime.id` for every sender.
 2. Schema validation: type discriminant plus shape check before dispatch; unknown or malformed messages are dropped.
-3. Origin checks: crawl and query targets are always re-derived server-side from the granted set; page-supplied URLs are never used as crawl targets.
+3. Origin checks: crawl and query targets are always re-derived server-side from the granted set; page-supplied URLs are never used as crawl targets. Origin strings must be canonical http(s) origins with no path, credentials, or explicit port — permission match patterns cannot carry ports.
 
 ## Crawler (service worker)
 
@@ -124,7 +126,7 @@ Validation rules, applied in order for every incoming message:
 
 - transformers.js v3 loads the bundled `onnx-community/bge-small-en-v1.5` Q8 model (~34MB, 384-dim). WebGPU used when `navigator.gpu` exists (Chrome 113+); otherwise single-threaded WASM.
 - Batches of 32 chunk texts; each batch is embedded, written to IndexedDB, then check pointed before the next batch starts.
-- Runtime host lifecycle (ADR-0001): on Chromium, created on demand with reason `WORKERS` after a `chrome.offscreen.hasDocument()` check (only one offscreen document may exist), retained while a port to the SW is open, closed when idle. On Firefox, the persistent background page needs no lifecycle management.
+- Runtime host lifecycle (ADR-0001): on Chromium, created on demand with reason `WORKERS` after a `chrome.offscreen.hasDocument()` check (only one offscreen document may exist), retained while a port to the SW is open, closed when idle. On Firefox, the host is the background event page itself; every batch checkpoint and progress write is a parent extension-API call that resets the idle timer (Bug 1844041).
 
 ## Vector store (IndexedDB)
 
@@ -145,7 +147,7 @@ Validation rules, applied in order for every incoming message:
 
 ## Popup UI
 
-States: `inactive` (site not granted/indexed), `indexing` (progress bar, page and chunk counts), `ready` (chat box, sources list, storage readout), `error` (banner with actionable message). The chat renders assistant output as sanitized markdown with `[n]` citation chips that expand to source URL and heading. Only the popup renders model output; nothing it renders can execute (marked + DOMPurify, 04).
+States: `inactive` (site not granted), `indexing` (progress bar, page and chunk counts), `ready` (chat box, sources list, storage readout), `error` (banner with actionable message). On open, the popup reads the active tab's URL via `activeTab` (no `tabs` permission, 07) and asks the SW for the site status; the grant button requests the per-site optional host permission. M1 reaches `inactive`/`idle`; the remaining states arrive with M2/M3. The chat renders assistant output as sanitized markdown with `[n]` citation chips that expand to source URL and heading. Only the popup renders model output; nothing it renders can execute (marked + DOMPurify, 04).
 
 ## Options page
 

@@ -1,0 +1,75 @@
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  width: 320px;
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  font-size: 14px;
+}
+
+.popup {
+  padding: 12px;
+}
+
+.popup-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.popup-header h1 {
+  font-size: 16px;
+  margin: 0;
+}
+
+.options-link {
+  font-size: 12px;
+}
+
+.banner {
+  margin-top: 8px;
+  padding: 8px;
+  border-radius: 6px;
+}
+
+.banner-error {
+  background: color-mix(in srgb, red 15%, transparent);
+}
+
+.site-card {
+  margin-top: 8px;
+}
+
+.site-origin {
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.muted {
+  opacity: 0.7;
+}
+
+.status-ok {
+  color: #1a7f37;
+}
+
+.status-err {
+  color: #c62828;
+}
+
+button {
+  font: inherit;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+  background: transparent;
+  cursor: pointer;
+}
+
+button.primary {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: white;
+}

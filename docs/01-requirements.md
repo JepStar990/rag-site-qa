@@ -76,7 +76,7 @@
 | Content scripts can read `chrome.storage` | No `content_scripts` in the manifest; a minimal script is injected on demand |
 | Web Store remote-code policy | The ONNX model is bundled in the package, not downloaded at runtime |
 | One offscreen document at a time | Single shared offscreen context for embedding and LLM streaming |
-| Firefox has no `chrome.offscreen` | Runtime host abstraction: offscreen document on Chromium, persistent background page on Firefox (ADR-0001) |
+| Firefox has no `chrome.offscreen`; MV3 backgrounds are always event pages | Runtime host abstraction: offscreen document on Chromium, background event page kept alive by extension-API-call heartbeats on Firefox (ADR-0001) |
 | Namespace and packaging differ per platform | Two build targets, minimal namespace shim (ADR-0009) |
 | DeepSeek V4 models default to thinking ON | Explicit `thinking` toggle on every request |
 
