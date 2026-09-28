@@ -40,7 +40,11 @@ interface QaSession {
 
 const sessionKey = (origin: string): string => `qa:${origin}`;
 
-/** One QA request in flight at a time (docs/06); module scope survives teardown loss. */
+/**
+ * One QA request in flight at a time (docs/06). The slot is module scope
+ * and is lost if the SW is torn down mid-answer; that is acceptable — the
+ * stream itself lives in the runtime host (ADR-0008) and finishes there.
+ */
 let inflight: { origin: string } | null = null;
 
 export async function askSite(
