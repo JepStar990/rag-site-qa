@@ -14,6 +14,6 @@ export const chromiumManifest = defineManifest({
   host_permissions: ['https://api.deepseek.com/*'],
   content_security_policy: {
     extension_pages:
-      "script-src 'self'; object-src 'none'; connect-src https://api.deepseek.com; base-uri 'none'; frame-ancestors 'none';",
+      "script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; connect-src 'self' https://api.deepseek.com; base-uri 'none'; frame-ancestors 'none';",
   },
 });

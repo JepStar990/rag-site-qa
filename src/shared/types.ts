@@ -81,6 +81,9 @@ export const DEFAULT_SETTINGS: Settings = {
 /** Both supported embedding models are 384-dim, so vectors are interchangeable. */
 export const EMBED_DIM = 384;
 
+/** Embedding batch size (docs/03): each batch is embedded and written before the next starts. */
+export const EMBED_BATCH_SIZE = 32;
+
 /* IndexedDB records. One database per origin, named site-<hash16> (ADR-0005). */
 
 export interface PageRecord {
@@ -126,4 +129,12 @@ export interface SiteMeta {
   lastCrawledAt: number | null;
   chunkCount: number;
   sizeEstimateBytes: number;
+}
+
+/** One row of the popup sources view (docs/03): page, chunk count, crawl time. */
+export interface SourceInfo {
+  url: string;
+  title: string;
+  chunkCount: number;
+  crawledAt: number;
 }

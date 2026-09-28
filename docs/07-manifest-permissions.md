@@ -67,7 +67,7 @@ One known, accepted `web-ext lint` warning: `UNSAFE_VAR_ASSIGNMENT` on the bundl
 
 ## CSP (both platforms)
 
-Identical to 04: `script-src 'self'; object-src 'none'; connect-src https://api.deepseek.com; base-uri 'none'; frame-ancestors 'none';`. Firefox enforces `extension_pages` CSP with the same semantics. No remote code, no eval, no analytics domains.
+Chromium: `script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; connect-src 'self' https://api.deepseek.com; base-uri 'none'; frame-ancestors 'none';`. The `'wasm-unsafe-eval'` keyword is required for WASM compilation (onnxruntime-web in the embedder) and allows nothing but WASM; `connect-src 'self'` lets the service worker fetch the bundled tokenizer and model from the extension package (ADR-0002). Firefox: the same without `'wasm-unsafe-eval'` — Firefox does not implement the keyword (web-ext flags it) and does not require it for WASM. No remote code, no eval, no analytics domains.
 
 ## Build and package
 

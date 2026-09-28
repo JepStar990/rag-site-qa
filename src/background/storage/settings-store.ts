@@ -4,7 +4,7 @@ import { sanitizeSettings } from '../../shared/settings';
 import type { Settings } from '../../shared/types';
 import { getStoredKey } from '../../shared/key-store';
 
-const SETTINGS_KEYS = ['modelPrefs', 'budget', 'caps', 'retrieval'] as const;
+const SETTINGS_KEYS: string[] = ['modelPrefs', 'budget', 'caps', 'retrieval'];
 
 /** Read settings from storage, merged with defaults and sanitized. */
 export async function getStoredSettings(): Promise<Settings> {

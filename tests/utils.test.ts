@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clampPoliteness, siteDbName } from '../src/shared/utils.js';
+import { clampPoliteness, estimateSiteSize, formatBytes, sha256Hex, siteDbName } from '../src/shared/utils.js';
 
 describe('siteDbName', () => {
   it('produces a stable 21-char name for a given origin', async () => {
@@ -13,6 +13,31 @@ describe('siteDbName', () => {
 
   it('differs across origins', async () => {
     expect(await siteDbName('https://example.com')).not.toBe(await siteDbName('https://other.org'));
+  });
+});
+
+describe('sha256Hex', () => {
+  it('matches the known SHA-256 of the empty string', async () => {
+    expect(await sha256Hex('')).toBe(
+      'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    );
+  });
+});
+
+describe('estimateSiteSize', () => {
+  it('uses the documented 3.5KB per chunk figure (05)', () => {
+    expect(estimateSiteSize(0)).toBe(0);
+    expect(estimateSiteSize(10000)).toBe(35_000_000);
+  });
+});
+
+describe('formatBytes', () => {
+  it('formats byte, kilobyte, and megabyte magnitudes', () => {
+    expect(formatBytes(0)).toBe('0 B');
+    expect(formatBytes(1023)).toBe('1023 B');
+    expect(formatBytes(1024)).toBe('1.0 KB');
+    expect(formatBytes(35_000)).toBe('34.2 KB');
+    expect(formatBytes(1024 * 1024)).toBe('1.0 MB');
   });
 });
 

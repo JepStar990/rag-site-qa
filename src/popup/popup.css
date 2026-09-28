@@ -73,3 +73,62 @@ button.primary {
   border-color: #2563eb;
   color: white;
 }
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.index-card {
+  margin-top: 8px;
+}
+
+.index-card p {
+  margin: 4px 0;
+}
+
+.bar {
+  height: 6px;
+  border-radius: 3px;
+  background: color-mix(in srgb, currentColor 20%, transparent);
+  overflow: hidden;
+}
+
+.bar-fill {
+  height: 100%;
+  background: #2563eb;
+  transition: width 0.2s ease;
+}
+
+.sources {
+  margin-top: 8px;
+}
+
+.sources h2 {
+  font-size: 13px;
+  margin: 10px 0 4px;
+}
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.source-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 0;
+  border-top: 1px solid color-mix(in srgb, currentColor 15%, transparent);
+}
+
+.source-title {
+  font-weight: 600;
+}
+
+.source-url {
+  font-size: 11px;
+  word-break: break-all;
+}

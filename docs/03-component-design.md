@@ -83,23 +83,25 @@ Jobs survive kills because both the crawl queue and embedding checkpoints are pe
 
 ## Message bus and protocol
 
-All communication between contexts goes through a validated message bus in the service worker. There is no `externally_connectable` (04).
+All communication between contexts goes through a validated message bus in the service worker. There is no `externally_connectable` (04). One-shot requests use `runtime.sendMessage`; two continuous channels use named runtime ports with the same sender gate (`isTrustedPort`): `siteqa-progress` (popup subscribes per origin, SW broadcasts `index-progress` / `index-ready` / `index-failed`) and `siteqa-host` (SW -> runtime host batches, correlated on `batchId`).
 
 | Message | Direction | Payload | Status |
 |---|---|---|---|
 | `get-settings` | options/popup -> SW | — | M1 |
 | `save-settings` | options -> SW | `{settings}` (sanitized server-side; `apiKey` and spend never accepted) | M1 |
 | `get-site-status` | popup -> SW | `{origin}` | M1 |
-| `index-site` | popup -> SW | `{origin, url}` | M2 |
-| `index-progress` | SW -> popup | `{origin, pages, chunks}` | M2 |
+| `index-site` | popup -> SW | `{origin, url}` (url re-derived and same-origin-checked, 04) | M2 |
+| `index-progress` | SW -> popup | `{origin, phase, pages, chunks, totalChunks}` | M2 |
 | `index-ready` | SW -> popup | `{origin, chunkCount, sizeEstimateBytes}` | M2 |
+| `index-failed` | SW -> popup | `{origin, reason}` | M2 |
 | `list-sources` | popup -> SW | `{origin}` | M2 |
 | `ask` | popup -> SW | `{origin, question, requestId}` | M3 |
 | `stream-chunk` | runtime host -> SW | `{requestId, delta}` | M3 |
 | `stream-done` | runtime host -> SW | `{requestId, usage}` | M3 |
 | `answer-token` / `answer-done` | SW -> popup | `{requestId, delta or citations}` | M3 |
-| `embed-batch` | SW -> runtime host | `{dbName, chunks}` | M2 |
-| `embed-done` | runtime host -> SW | `{dbName, checkpoint}` | M2 |
+| `embed-batch` | SW -> runtime host | `{dbName, batchId, chunks}` | M2 |
+| `embed-done` | runtime host -> SW | `{dbName, batchId, embedded}` | M2 |
+| `embed-error` | runtime host -> SW | `{dbName, batchId, error}` | M2 |
 
 Validation rules, applied in order for every incoming message:
 
