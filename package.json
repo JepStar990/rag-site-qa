@@ -1,0 +1,21 @@
+{
+  "name": "rag-site-qa",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SiteQA - browser-only RAG question answering over entire websites",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm run lint && npm run test"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.9.0",
+    "@types/chrome": "^0.0.268",
+    "eslint": "^9.9.0",
+    "typescript": "^5.5.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^2.1.0"
+  }
+}
