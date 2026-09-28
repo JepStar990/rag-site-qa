@@ -44,6 +44,18 @@ describe('parseMessage', () => {
     expect(parseMessage({ type: MSG.getSiteStatus })).toBeNull();
   });
 
+  it('parses list-sources with a valid origin', () => {
+    expect(parseMessage({ type: MSG.listSources, origin: 'https://example.com' })).toEqual({
+      type: MSG.listSources,
+      origin: 'https://example.com',
+    });
+  });
+
+  it('rejects list-sources with an invalid origin', () => {
+    expect(parseMessage({ type: MSG.listSources, origin: 'https://example.com:8080' })).toBeNull();
+    expect(parseMessage({ type: MSG.listSources })).toBeNull();
+  });
+
   it('rejects unknown message types and malformed shapes', () => {
     expect(parseMessage({ type: 'steal-the-key' })).toBeNull();
     expect(parseMessage({})).toBeNull();

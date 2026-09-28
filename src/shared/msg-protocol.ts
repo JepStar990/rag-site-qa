@@ -9,23 +9,26 @@
  *   and key writes happen only from the options page directly to storage
  */
 
-import type { Settings, SiteIndexStatus } from './types';
+import type { Settings, SiteIndexStatus, SourceInfo } from './types';
 
 export const MSG = {
   getSettings: 'get-settings',
   saveSettings: 'save-settings',
   getSiteStatus: 'get-site-status',
+  listSources: 'list-sources',
 } as const;
 
 export type Message =
   | { type: typeof MSG.getSettings }
   | { type: typeof MSG.saveSettings; settings: unknown }
-  | { type: typeof MSG.getSiteStatus; origin: string };
+  | { type: typeof MSG.getSiteStatus; origin: string }
+  | { type: typeof MSG.listSources; origin: string };
 
 /** Discriminated on `kind` because both success variants share `ok: true`. */
 export type MessageResponse =
   | { ok: true; kind: 'settings'; settings: Settings }
   | { ok: true; kind: 'status'; status: SiteIndexStatus | 'inactive' }
+  | { ok: true; kind: 'sources'; sources: SourceInfo[] }
   | { ok: false; error: 'unhandled' };
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -59,6 +62,8 @@ export function parseMessage(value: unknown): Message | null {
       return isRecord(value.settings) ? { type: MSG.saveSettings, settings: value.settings } : null;
     case MSG.getSiteStatus:
       return isValidOrigin(value.origin) ? { type: MSG.getSiteStatus, origin: value.origin } : null;
+    case MSG.listSources:
+      return isValidOrigin(value.origin) ? { type: MSG.listSources, origin: value.origin } : null;
     default:
       return null;
   }

@@ -127,3 +127,11 @@ export interface SiteMeta {
   chunkCount: number;
   sizeEstimateBytes: number;
 }
+
+/** One row of the popup sources view (docs/03): page, chunk count, crawl time. */
+export interface SourceInfo {
+  url: string;
+  title: string;
+  chunkCount: number;
+  crawledAt: number;
+}
