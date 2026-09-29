@@ -111,15 +111,18 @@ describe('startQaWatchdog', () => {
     h.setQuery({ active: false });
     await vi.advanceTimersByTimeAsync(60_000);
     expect(h.onInterrupted).toHaveBeenCalledTimes(1);
-    expect(h.onInterrupted.mock.calls[0]?.[0]).toBe('');
+    expect(h.onInterrupted.mock.calls[0]?.[0]).toMatchObject({ answer: '' });
   });
 
-  it('passes the partial answer through on interrupt', async () => {
+  it('passes the streaming session through on interrupt', async () => {
     const h = makeHarness();
-    h.setSession(session({ answer: 'half an answer' }));
+    h.setSession(session({ answer: 'half an answer', askedAt: 1720000000000 }));
     h.setQuery({ active: false });
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(h.onInterrupted.mock.calls[0]?.[0]).toBe('half an answer');
+    expect(h.onInterrupted.mock.calls[0]?.[0]).toMatchObject({
+      answer: 'half an answer',
+      askedAt: 1720000000000,
+    });
   });
 
   it('keeps polling while the status query fails, interrupting only past the absolute cap', async () => {

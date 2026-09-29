@@ -39,7 +39,7 @@ export interface QaWatchdogDeps {
   /** A terminal transcript landed for our requestId. */
   onTerminal(session: QaSession): void;
   /** No live stream exists and none can: show the interrupted error. */
-  onInterrupted(partialAnswer: string): void;
+  onInterrupted(session: QaSession): void;
   setInterval(fn: () => void, ms: number): number;
   clearInterval(id: number): void;
   now(): number;
@@ -85,7 +85,7 @@ export function startQaWatchdog(deps: QaWatchdogDeps): { stop(): void } {
       } catch {
         // SW unreachable: keep waiting unless the absolute cap has passed.
         if (now - deps.askedAt >= ABSOLUTE_CAP_MS) {
-          deps.onInterrupted(session.answer);
+          deps.onInterrupted(session);
           stop();
         }
         return;
@@ -97,7 +97,7 @@ export function startQaWatchdog(deps: QaWatchdogDeps): { stop(): void } {
         lastChange = deps.now();
         return;
       }
-      deps.onInterrupted(session.answer);
+      deps.onInterrupted(session);
       stop();
     })();
   };

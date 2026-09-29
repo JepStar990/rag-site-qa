@@ -130,7 +130,8 @@ function startWatchdog(origin: string, requestId: string, askedAt: number): void
         });
       }
     },
-    onInterrupted: (partialAnswer) => handleInterrupted(origin, requestId, partialAnswer),
+    onInterrupted: (session) =>
+      handleInterrupted(origin, requestId, session.answer, session.askedAt),
     setInterval: (fn, ms) => window.setInterval(fn, ms),
     clearInterval: (id) => window.clearInterval(id),
     now: () => Date.now(),
@@ -255,7 +256,12 @@ function applyError(args: {
  * requestId-guarded: a stale watchdog must never clobber a newer ask's
  * streaming transcript.
  */
-function handleInterrupted(origin: string, requestId: string, partialAnswer: string): void {
+function handleInterrupted(
+  origin: string,
+  requestId: string,
+  partialAnswer: string,
+  askedAt: number,
+): void {
   const current = qaState.value;
   if (current.phase !== 'asking' || current.requestId !== requestId) return;
   stopQaWatchdog();
@@ -267,7 +273,7 @@ function handleInterrupted(origin: string, requestId: string, partialAnswer: str
         [key]: {
           requestId,
           question: current.question,
-          askedAt: Date.now(),
+          askedAt,
           status: 'error',
           answer: partialAnswer,
           citations: [],
