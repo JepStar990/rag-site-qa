@@ -40,17 +40,17 @@ interface Harness {
 /** Wires a lifecycle whose stream emits "Hello " before resolving, "world" after. */
 function makeHarness(opts?: { throwOnPost?: boolean; setSessionOverride?: StreamTakeoverDeps['setSession'] }): Harness {
   const posts: HostPortEvent[] = [];
-  const streamCtl = deferred<{ usage: QaUsage | null }>();
+  const streamCtl = deferred<QaUsage | null>();
   const addSpend = vi.fn(async () => ({ costUsd: 0.5, spentThisMonthUsd: 1.25 }));
   const readBudget = vi.fn(async () => 0.75);
-  const setSession =
-    opts?.setSessionOverride ??
-    vi.fn(async (_key: string, _session: QaSession) => {
-      // no-op persistence: assertions read the call args
-    });
+  const setSession: ReturnType<typeof vi.fn> = opts?.setSessionOverride
+    ? vi.fn(opts.setSessionOverride)
+    : vi.fn(async (_key: string, _session: QaSession) => {
+        // no-op persistence: assertions read the call args
+      });
   const streamChat = vi.fn(async (_req: unknown, _deps: unknown, onDelta: (d: string) => void) => {
     onDelta('Hello ');
-    const { usage } = await streamCtl.promise;
+    const usage = await streamCtl.promise;
     onDelta('world');
     return { usage };
   });
@@ -181,7 +181,7 @@ describe('StreamLifecycle', () => {
   });
 
   it('does not post retries after the port is gone', async () => {
-    const streamCtl = deferred<{ usage: QaUsage | null }>();
+    const streamCtl = deferred<QaUsage | null>();
     const posts: HostPortEvent[] = [];
     const setSession = vi.fn(async () => {});
     const streamChat = vi.fn(async (_req: unknown, _deps: unknown, _onDelta: (d: string) => void, onRetry: () => void) => {

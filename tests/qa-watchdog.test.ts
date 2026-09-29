@@ -46,7 +46,7 @@ function makeHarness(): Harness {
     },
     onTerminal,
     onInterrupted,
-    setInterval: (fn, ms) => setInterval(fn, ms),
+    setInterval: (fn, ms) => setInterval(fn, ms) as unknown as number,
     clearInterval: (id) => clearInterval(id),
     now: () => Date.now(),
   });

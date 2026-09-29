@@ -104,7 +104,7 @@ function startWatchdog(origin: string, requestId: string, askedAt: number): void
         (res as { ok: boolean }).ok &&
         (res as { kind?: unknown }).kind === 'qa-stream'
       ) {
-        const typed = res as { active: boolean; heldBySw: boolean };
+        const typed = res as unknown as { active: boolean; heldBySw: boolean };
         return { active: typed.active, heldBySw: typed.heldBySw };
       }
       throw new Error('qa-stream query failed');
