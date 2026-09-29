@@ -38,7 +38,10 @@ function makeHarness(): Harness {
   const onInterrupted = vi.fn();
   const watchdog = startQaWatchdog({
     requestId: 'q1',
-    askedAt: 0,
+    // Anchored to the fake clock (installed in beforeEach): the absolute
+    // cap measures elapsed time, and vitest anchors fake timers at the
+    // real epoch, so a literal 0 would trip the cap immediately.
+    askedAt: Date.now(),
     readSession: async () => current,
     queryActive: async () => {
       if (query === 'throw') throw new Error('SW unreachable');
@@ -118,7 +121,10 @@ describe('startQaWatchdog', () => {
     const h = makeHarness();
     h.setSession(session({ answer: 'half an answer', askedAt: 1720000000000 }));
     h.setQuery({ active: false });
-    await vi.advanceTimersByTimeAsync(60_000);
+    // The answer growth at the first tick resets the silence window, so
+    // the interrupt lands one silence window past that: ~62s.
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(h.onInterrupted).toHaveBeenCalledTimes(1);
     expect(h.onInterrupted.mock.calls[0]?.[0]).toMatchObject({
       answer: 'half an answer',
       askedAt: 1720000000000,
@@ -130,7 +136,7 @@ describe('startQaWatchdog', () => {
     h.setQuery('throw');
     await vi.advanceTimersByTimeAsync(60_000);
     expect(h.onInterrupted).not.toHaveBeenCalled();
-    // 10-minute failsafe (ABSOLUTE_CAP_MS) from askedAt=0.
+    // 10-minute failsafe (ABSOLUTE_CAP_MS) from the ask time.
     await vi.advanceTimersByTimeAsync(10 * 60_000);
     expect(h.onInterrupted).toHaveBeenCalledTimes(1);
   });
