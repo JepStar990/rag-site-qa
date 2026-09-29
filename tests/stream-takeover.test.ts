@@ -45,7 +45,7 @@ function makeHarness(opts?: { throwOnPost?: boolean; setSessionOverride?: Stream
   const readBudget = vi.fn(async () => 0.75);
   const setSession: ReturnType<typeof vi.fn> = opts?.setSessionOverride
     ? vi.fn(opts.setSessionOverride)
-    : vi.fn(async (_key: string, _session: QaSession) => {
+    : vi.fn(async () => {
         // no-op persistence: assertions read the call args
       });
   const streamChat = vi.fn(async (_req: unknown, _deps: unknown, onDelta: (d: string) => void) => {
