@@ -8,7 +8,7 @@
 import { isTrustedSender, MSG, parseMessage } from '../shared/msg-protocol';
 import type { MessageResponse } from '../shared/msg-protocol';
 import { publicSettings } from '../shared/settings';
-import { askSite } from './handlers/ask-site';
+import { askSite, getQaStreamStatus } from './handlers/ask-site';
 import { indexSite } from './handlers/index-site';
 import { getSiteStatusInfo } from './handlers/site-status';
 import { listSourcesInfo } from './handlers/sources';
@@ -47,6 +47,10 @@ export async function handleMessage(
       if (result === 'started') return { ok: true, kind: 'asking', origin: message.origin };
       if (result === 'permission-denied') return { ok: false, error: 'permission' };
       return { ok: false, error: result };
+    }
+    case MSG.getQaStream: {
+      const { active, heldBySw } = await getQaStreamStatus(message.origin, message.requestId);
+      return { ok: true, kind: 'qa-stream', active, heldBySw };
     }
   }
 }

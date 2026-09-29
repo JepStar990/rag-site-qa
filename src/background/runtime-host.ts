@@ -16,18 +16,23 @@ import {
   isEmbedQueryResultFrame,
   isHostFrame,
   isStreamFrame,
+  isStreamStatusReplyFrame,
   PORT,
   type HostPortEvent,
   type StreamError,
 } from '../shared/msg-protocol';
-import type { ChatMessage, ModelPrefs, QaUsage } from '../shared/types';
-import { runEmbedBatch } from '../lib/embed/embedder';
-import { createEmbedder } from '../lib/embed/embedder';
+import type { ChatMessage, CitationDoc, ModelPrefs, QaUsage } from '../shared/types';
+import { createEmbedder, runEmbedBatch } from '../lib/embed/embedder';
 import { adaptFetch, streamChat, type StreamDeps } from '../lib/llm/stream-client';
 import type { EmbedBatchRequest } from '../lib/crawl/crawl';
 
 export interface StreamChatRequest {
   requestId: string;
+  /** Session context for the host's takeover transcript if the SW dies (ADR-0010). */
+  origin: string;
+  question: string;
+  askedAt: number;
+  citationDocs: CitationDoc[];
   messages: ChatMessage[];
   apiKey: string;
   modelPrefs: ModelPrefs;
@@ -54,6 +59,39 @@ export function createRuntimeHost(opts: { modelPath: string }): Promise<RuntimeH
   // The Chromium host never sees the model path: the offscreen document
   // derives it from its own runtime (ADR-0001).
   return 'offscreen' in browserApi ? createChromiumHost() : createFirefoxHost(opts);
+}
+
+const STREAM_STATUS_TIMEOUT_MS = 5_000;
+
+/**
+ * Asks the runtime host whether a QA stream with this requestId is still
+ * alive (ADR-0010). Deliberately not a {@link createRuntimeHost} instance:
+ * its dispose() calls `closeDocument()`, which would kill a takeover
+ * stream mid-write. Never creates or closes the offscreen document.
+ *
+ * Firefox has no offscreen document — the in-process stream dies with the
+ * event page, so "not held by this SW" means the stream is gone.
+ */
+export async function queryStreamStatus(requestId: string): Promise<boolean> {
+  if (!('offscreen' in browserApi)) return false;
+  if (!(await browserApi.offscreen.hasDocument())) return false;
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const port = browserApi.runtime.connect({ name: PORT.host });
+    const finish = (active: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      port.disconnect();
+      resolve(active);
+    };
+    const timer = setTimeout(() => finish(false), STREAM_STATUS_TIMEOUT_MS);
+    port.onMessage.addListener((value: unknown) => {
+      if (isStreamStatusReplyFrame(value) && value.requestId === requestId) finish(value.active);
+    });
+    port.onDisconnect.addListener(() => finish(false));
+    port.postMessage({ type: 'stream-status', requestId } satisfies HostPortEvent);
+  });
 }
 
 /** Firefox: the event page embeds and streams in-process via the shared runners. */
@@ -221,6 +259,10 @@ async function createChromiumHost(): Promise<RuntimeHost> {
       p.postMessage({
         type: 'start-stream',
         requestId: req.requestId,
+        origin: req.origin,
+        question: req.question,
+        askedAt: req.askedAt,
+        citationDocs: req.citationDocs,
         messages: req.messages,
         apiKey: req.apiKey,
         modelPrefs: req.modelPrefs,

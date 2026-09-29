@@ -3,6 +3,11 @@
  * streaming sanitized answer with citation chips, spend readout, and the
  * docs/06 error-matrix banners. State lives in module signals so the port
  * event handlers in app.tsx and this component share it without props.
+ *
+ * Every `asking` phase is backed by a watchdog (ADR-0010): if the stream's
+ * owner died and no live stream can still produce a terminal state, the
+ * popup shows "This answer was interrupted. Ask again." and re-enables the
+ * input instead of dead-ending at "Answering...".
  */
 
 import { signal } from '@preact/signals';
@@ -11,6 +16,8 @@ import { browserApi } from '../shared/browser-api';
 import { MSG } from '../shared/msg-protocol';
 import type { ProgressPortEvent, AskRejectReason } from '../shared/msg-protocol';
 import type { QaCitation, QaErrorReason, QaUsage, Settings } from '../shared/types';
+import { isQaSession, qaSessionKey, type QaSession } from '../shared/qa-session';
+import { startQaWatchdog } from './qa-watchdog';
 import { renderAnswerInto } from './qa-render';
 
 type QaState =
@@ -43,25 +50,15 @@ const currentOrigin = signal<string | null>(null);
 const settings = signal<Settings | null>(null);
 const draft = signal('');
 
-/** The storage.session transcript written by the ask handler (docs/05). */
-interface QaSession {
-  requestId: string;
-  question: string;
-  status: 'streaming' | 'done' | 'error';
-  answer: string;
-  citations: QaCitation[];
-  usage: QaUsage | null;
-  costUsd: number | null;
-  spentThisMonthUsd: number | null;
-  reason: QaErrorReason | null;
-  message: string | null;
-}
+const INTERRUPTED_MESSAGE = 'This answer was interrupted. Ask again.';
 
-const isQaSession = (v: unknown): v is QaSession =>
-  typeof v === 'object' &&
-  v !== null &&
-  typeof (v as QaSession).requestId === 'string' &&
-  typeof (v as QaSession).status === 'string';
+/** The watchdog watching the current `asking` phase, if any (ADR-0010). */
+let watchdog: { stop(): void } | null = null;
+
+function stopQaWatchdog(): void {
+  watchdog?.stop();
+  watchdog = null;
+}
 
 export function setQaOrigin(origin: string | null): void {
   currentOrigin.value = origin;
@@ -69,6 +66,7 @@ export function setQaOrigin(origin: string | null): void {
 
 /** Wipes QA state when the popup moves to a different site or status. */
 export function resetQa(): void {
+  stopQaWatchdog();
   qaState.value = { phase: 'idle' };
   askError.value = null;
   draft.value = '';
@@ -77,6 +75,66 @@ export function resetQa(): void {
 /** Generates the requestId the ask message carries (validated by the bus). */
 function newRequestId(): string {
   return `q${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
+ * Starts the watchdog for one `asking` phase. Shared by fresh asks and
+ * restored streaming sessions; deps are wired to storage.session and the
+ * `get-qa-stream` bus message here, the timing logic lives in qa-watchdog.ts.
+ */
+function startWatchdog(origin: string, requestId: string, askedAt: number): void {
+  stopQaWatchdog();
+  watchdog = startQaWatchdog({
+    requestId,
+    askedAt,
+    readSession: async () => {
+      const stored = (await browserApi.storage.session.get(qaSessionKey(origin)))[qaSessionKey(origin)];
+      return isQaSession(stored) ? stored : null;
+    },
+    queryActive: async () => {
+      const res: unknown = await browserApi.runtime.sendMessage({
+        type: MSG.getQaStream,
+        origin,
+        requestId,
+      });
+      if (
+        typeof res === 'object' &&
+        res !== null &&
+        'ok' in res &&
+        (res as { ok: boolean }).ok &&
+        (res as { kind?: unknown }).kind === 'qa-stream'
+      ) {
+        const typed = res as { active: boolean; heldBySw: boolean };
+        return { active: typed.active, heldBySw: typed.heldBySw };
+      }
+      throw new Error('qa-stream query failed');
+    },
+    onTerminal: (session) => {
+      if (session.status === 'done') {
+        applyDone({
+          requestId: session.requestId,
+          question: session.question,
+          answer: session.answer,
+          citations: session.citations,
+          usage: session.usage,
+          costUsd: session.costUsd,
+          spentThisMonthUsd: session.spentThisMonthUsd ?? 0,
+        });
+      } else {
+        applyError({
+          requestId: session.requestId,
+          question: session.question,
+          answer: session.answer,
+          reason: session.reason ?? 'network',
+          message: session.message ?? 'Something went wrong. Try again.',
+        });
+      }
+    },
+    onInterrupted: (partialAnswer) => handleInterrupted(origin, requestId, partialAnswer),
+    setInterval: (fn, ms) => window.setInterval(fn, ms),
+    clearInterval: (id) => window.clearInterval(id),
+    now: () => Date.now(),
+  });
 }
 
 async function ask(question: string): Promise<void> {
@@ -94,6 +152,7 @@ async function ask(question: string): Promise<void> {
     if (typed.ok) {
       askError.value = null;
       qaState.value = { phase: 'asking', requestId, question, answer: '', retrying: false };
+      startWatchdog(origin, requestId, Date.now());
       return;
     }
     if (typed.error && typed.error !== 'unhandled') {
@@ -108,40 +167,130 @@ async function ask(question: string): Promise<void> {
 
 /** Restores the last transcript when the popup (re)opens on a ready site. */
 export async function restoreQaSession(origin: string): Promise<void> {
-  const stored = (await browserApi.storage.session.get(`qa:${origin}`)) as Record<string, unknown>;
-  const session = stored[`qa:${origin}`];
-  if (!isQaSession(session)) return;
+  const stored = (await browserApi.storage.session.get(qaSessionKey(origin)))[qaSessionKey(origin)];
+  if (!isQaSession(stored)) return;
 
-  if (session.status === 'streaming') {
-    // A stream is in flight; live events will append from here.
+  if (stored.status === 'streaming') {
+    // A stream is in flight; live events will append from here, and the
+    // watchdog resolves the session if the stream is actually dead.
     qaState.value = {
       phase: 'asking',
-      requestId: session.requestId,
-      question: session.question,
-      answer: session.answer,
+      requestId: stored.requestId,
+      question: stored.question,
+      answer: stored.answer,
       retrying: false,
     };
-  } else if (session.status === 'done') {
+    startWatchdog(origin, stored.requestId, stored.askedAt);
+  } else if (stored.status === 'done') {
     qaState.value = {
       phase: 'done',
-      requestId: session.requestId,
-      question: session.question,
-      answer: session.answer,
-      citations: session.citations,
-      usage: session.usage,
-      costUsd: session.costUsd,
-      spentThisMonthUsd: session.spentThisMonthUsd ?? 0,
+      requestId: stored.requestId,
+      question: stored.question,
+      answer: stored.answer,
+      citations: stored.citations,
+      usage: stored.usage,
+      costUsd: stored.costUsd,
+      spentThisMonthUsd: stored.spentThisMonthUsd ?? 0,
     };
-  } else if (session.reason && session.message) {
+  } else if (stored.reason && stored.message) {
     qaState.value = {
       phase: 'error',
-      requestId: session.requestId,
-      question: session.question,
-      answer: session.answer,
-      reason: session.reason,
-      message: session.message,
+      requestId: stored.requestId,
+      question: stored.question,
+      answer: stored.answer,
+      reason: stored.reason,
+      message: stored.message,
     };
   }
+}
+
+/** Applies a terminal done state; shared by port events and the watchdog. */
+function applyDone(args: {
+  requestId: string;
+  question: string;
+  answer: string;
+  citations: QaCitation[];
+  usage: QaUsage | null;
+  costUsd: number | null;
+  spentThisMonthUsd: number;
+}): void {
+  const current = qaState.value;
+  if (current.phase !== 'asking' || current.requestId !== args.requestId) return;
+  stopQaWatchdog();
+  qaState.value = {
+    phase: 'done',
+    requestId: args.requestId,
+    question: args.question,
+    answer: args.answer,
+    citations: args.citations,
+    usage: args.usage,
+    costUsd: args.costUsd,
+    spentThisMonthUsd: args.spentThisMonthUsd,
+  };
+}
+
+/** Applies a terminal error state; shared by port events and the watchdog. */
+function applyError(args: {
+  requestId: string;
+  question: string;
+  answer: string;
+  reason: QaErrorReason;
+  message: string;
+}): void {
+  const current = qaState.value;
+  if (current.phase !== 'asking' || current.requestId !== args.requestId) return;
+  stopQaWatchdog();
+  qaState.value = {
+    phase: 'error',
+    requestId: args.requestId,
+    question: args.question,
+    answer: args.answer,
+    reason: args.reason,
+    message: args.message,
+  };
+}
+
+/**
+ * Marks a dead stream interrupted (ADR-0010). The transcript write is
+ * requestId-guarded: a stale watchdog must never clobber a newer ask's
+ * streaming transcript.
+ */
+function handleInterrupted(origin: string, requestId: string, partialAnswer: string): void {
+  const current = qaState.value;
+  if (current.phase !== 'asking' || current.requestId !== requestId) return;
+  stopQaWatchdog();
+  const key = qaSessionKey(origin);
+  void (async () => {
+    const stored = (await browserApi.storage.session.get(key))[key];
+    if (stored === undefined || (isQaSession(stored) && stored.requestId === requestId)) {
+      await browserApi.storage.session.set({
+        [key]: {
+          requestId,
+          question: current.question,
+          askedAt: Date.now(),
+          status: 'error',
+          answer: partialAnswer,
+          citations: [],
+          usage: null,
+          costUsd: null,
+          spentThisMonthUsd: null,
+          reason: 'interrupted',
+          message: INTERRUPTED_MESSAGE,
+        } satisfies QaSession,
+      });
+    }
+    // Re-check after the awaits: a newer ask may have started meanwhile.
+    const latest = qaState.value;
+    if (latest.phase !== 'asking' || latest.requestId !== requestId) return;
+    qaState.value = {
+      phase: 'error',
+      requestId,
+      question: latest.question,
+      answer: partialAnswer,
+      reason: 'interrupted',
+      message: INTERRUPTED_MESSAGE,
+    };
+  })();
 }
 
 /** Routes answer-* port events; called from app.tsx's progress listener. */
@@ -154,27 +303,23 @@ export function onQaPortEvent(event: ProgressPortEvent): void {
     if (current.phase !== 'asking' || current.requestId !== event.requestId) return;
     qaState.value = { ...current, retrying: true };
   } else if (event.type === 'answer-done') {
-    if (current.phase !== 'asking' || current.requestId !== event.requestId) return;
-    qaState.value = {
-      phase: 'done',
+    applyDone({
       requestId: event.requestId,
-      question: current.question,
+      question: current.phase === 'asking' ? current.question : '',
       answer: event.answer,
       citations: event.citations,
       usage: event.usage,
       costUsd: event.costUsd,
       spentThisMonthUsd: event.spentThisMonthUsd,
-    };
+    });
   } else if (event.type === 'answer-error') {
-    if (current.phase !== 'asking' || current.requestId !== event.requestId) return;
-    qaState.value = {
-      phase: 'error',
+    applyError({
       requestId: event.requestId,
-      question: current.question,
-      answer: current.answer,
+      question: current.phase === 'asking' ? current.question : '',
+      answer: current.phase === 'asking' ? current.answer : '',
       reason: event.reason,
       message: event.message,
-    };
+    });
   }
 }
 
@@ -255,6 +400,7 @@ export function QaView() {
         }
       }
     })();
+    return () => stopQaWatchdog();
   }, []);
 
   async function submit(): Promise<void> {

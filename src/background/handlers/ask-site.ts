@@ -4,48 +4,35 @@
  * accounts spend, and persists a transcript. Answers broadcast over the
  * popup progress port; the popup may close mid-stream and the answer
  * completes anyway (docs/06).
+ *
+ * The terminal `done` transcript is written before spend accounting so a
+ * SW death between the stream end and the budget update loses at most one
+ * storage write, not the answer (ADR-0010).
  */
 
 import { browserApi } from '../../shared/browser-api';
-import type { ProgressPortEvent, StreamError } from '../../shared/msg-protocol';
-import type { ChatMessage, QaCitation, QaUsage } from '../../shared/types';
+import type { ProgressPortEvent } from '../../shared/msg-protocol';
+import type { ChatMessage } from '../../shared/types';
+import { isQaSession, qaSessionKey, type QaSession } from '../../shared/qa-session';
 import { getAllChunks, getMeta, listPages, openSiteDb } from '../../lib/db/site-db';
 import { assembleMessages } from '../../lib/qa/prompt';
 import { parseCitations } from '../../lib/qa/citations';
 import { retrieveChunks, type RetrievedDoc } from '../../lib/qa/retrieve';
 import { toStreamError } from '../../lib/llm/stream-client';
 import { addSpend, getStoredSettings } from '../storage/settings-store';
-import { createRuntimeHost } from '../runtime-host';
+import { createRuntimeHost, queryStreamStatus } from '../runtime-host';
 import type { ProgressHub } from '../progress-hub';
 
 const HEARTBEAT_INTERVAL_MS = 10_000;
 
 export type AskStartResult = 'started' | 'permission-denied' | 'not-indexed' | 'no-key' | 'spend-cap' | 'busy';
 
-/** The transcript persisted to chrome.storage.session (docs/05): deltas are
- * buffered while streaming, and the finished answer survives popup close. */
-interface QaSession {
-  requestId: string;
-  question: string;
-  askedAt: number;
-  status: 'streaming' | 'done' | 'error';
-  answer: string;
-  citations: QaCitation[];
-  usage: QaUsage | null;
-  costUsd: number | null;
-  spentThisMonthUsd: number | null;
-  reason: StreamError['reason'] | null;
-  message: string | null;
-}
-
-const sessionKey = (origin: string): string => `qa:${origin}`;
-
 /**
  * One QA request in flight at a time (docs/06). The slot is module scope
- * and is lost if the SW is torn down mid-answer; that is acceptable — the
- * stream itself lives in the runtime host (ADR-0008) and finishes there.
+ * and is lost if the SW is torn down mid-answer; the stream itself lives
+ * in the runtime host (ADR-0008) and finishes there (ADR-0010 takeover).
  */
-let inflight: { origin: string } | null = null;
+let inflight: { origin: string; requestId: string } | null = null;
 
 export async function askSite(
   origin: string,
@@ -72,13 +59,50 @@ export async function askSite(
   }
   if (!indexed) return 'not-indexed';
 
-  inflight = { origin };
+  // A previous SW incarnation may have died mid-answer while its stream
+  // still runs in the runtime host. A fresh ask would double-bill that
+  // answer; report busy until the old stream reaches a terminal state
+  // (ADR-0010).
+  const stored = (await browserApi.storage.session.get(qaSessionKey(origin)))[qaSessionKey(origin)];
+  if (
+    isQaSession(stored) &&
+    stored.status === 'streaming' &&
+    stored.requestId !== requestId &&
+    (await queryStreamStatus(stored.requestId))
+  ) {
+    return 'busy';
+  }
+
+  inflight = { origin, requestId };
   void runAsk(origin, question, requestId, settings.apiKey, hub)
     .catch(() => {})
     .finally(() => {
       inflight = null;
     });
   return 'started';
+}
+
+/** True when this SW holds the stream: the popup will receive live port events. */
+export function computeHeldBySw(
+  current: { origin: string; requestId: string } | null,
+  origin: string,
+  requestId: string,
+): boolean {
+  return current !== null && current.origin === origin && current.requestId === requestId;
+}
+
+/**
+ * Answers `get-qa-stream` (ADR-0010): whether a terminal state for this
+ * request can still arrive. Held by this SW means live events flow; when
+ * not held, only the runtime host's takeover can produce one.
+ */
+export async function getQaStreamStatus(
+  origin: string,
+  requestId: string,
+): Promise<{ active: boolean; heldBySw: boolean }> {
+  const heldBySw = computeHeldBySw(inflight, origin, requestId);
+  if (heldBySw) return { active: true, heldBySw: true };
+  return { active: await queryStreamStatus(requestId).catch(() => false), heldBySw: false };
 }
 
 async function runAsk(
@@ -108,7 +132,7 @@ async function runAsk(
     reason: null,
     message: null,
   };
-  await browserApi.storage.session.set({ [sessionKey(origin)]: session });
+  await browserApi.storage.session.set({ [qaSessionKey(origin)]: session });
 
   try {
     // 1. Embed the question with the same model that built the index.
@@ -135,11 +159,27 @@ async function runAsk(
     }
 
     // 3. Stream, buffering every delta so a reopened popup can catch up.
+    // The citation docs ride along so the host can validate citations on
+    // its takeover transcript if this SW dies mid-answer (ADR-0010).
     const { usage } = await host.streamChat(
-      { requestId, messages, apiKey, modelPrefs: settings.modelPrefs },
+      {
+        requestId,
+        origin,
+        question,
+        askedAt: session.askedAt,
+        citationDocs: docsForCitations.map((doc) => ({
+          index: doc.index,
+          url: doc.url,
+          title: doc.title,
+          headingPath: doc.headingPath,
+        })),
+        messages,
+        apiKey,
+        modelPrefs: settings.modelPrefs,
+      },
       (delta) => {
         session.answer += delta;
-        void browserApi.storage.session.set({ [sessionKey(origin)]: session });
+        void browserApi.storage.session.set({ [qaSessionKey(origin)]: session });
         hub.broadcast(origin, {
           type: 'answer-token',
           requestId,
@@ -156,15 +196,19 @@ async function runAsk(
     session.citations = parseCitations(session.answer, docsForCitations);
     session.usage = usage;
 
-    // 5. Account spend from reported usage; no usage, no charge (honest zero).
+    // 5. Persist the terminal answer first (ADR-0010): from here a SW death
+    // no longer loses the answer, only the spend accounting below.
+    session.status = 'done';
+    await browserApi.storage.session.set({ [qaSessionKey(origin)]: session });
+
+    // 6. Account spend from reported usage; no usage, no charge (honest zero).
     if (usage) {
       const spent = await addSpend(usage.promptTokens, usage.completionTokens);
       session.costUsd = spent.costUsd;
       session.spentThisMonthUsd = spent.spentThisMonthUsd;
+      await browserApi.storage.session.set({ [qaSessionKey(origin)]: session });
     }
 
-    session.status = 'done';
-    await browserApi.storage.session.set({ [sessionKey(origin)]: session });
     hub.broadcast(origin, {
       type: 'answer-done',
       requestId,
@@ -180,7 +224,7 @@ async function runAsk(
     session.status = 'error';
     session.reason = mapped.reason;
     session.message = mapped.message;
-    await browserApi.storage.session.set({ [sessionKey(origin)]: session }).catch(() => {});
+    await browserApi.storage.session.set({ [qaSessionKey(origin)]: session }).catch(() => {});
     hub.broadcast(origin, {
       type: 'answer-error',
       requestId,

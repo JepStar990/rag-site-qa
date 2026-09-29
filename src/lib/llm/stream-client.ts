@@ -41,6 +41,9 @@ const BACKOFF_MS = [1_000, 2_000, 4_000];
 /** Abort a request that never produces a first byte (docs/06: network timeout). */
 const CONNECT_TIMEOUT_MS = 30_000;
 
+// Keep in sync with msg-protocol.ts's list. `interrupted` must never be
+// added: it is a popup-side synthetic reason, not something the provider
+// or the stream client can produce.
 const STREAM_ERROR_REASONS: readonly QaErrorReason[] = [
   'invalid_key',
   'no_balance',

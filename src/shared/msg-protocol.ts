@@ -13,6 +13,7 @@
 
 import type {
   ChatMessage,
+  CitationDoc,
   ModelPrefs,
   QaCitation,
   QaErrorReason,
@@ -31,6 +32,7 @@ export const MSG = {
   listSources: 'list-sources',
   indexSite: 'index-site',
   ask: 'ask-site',
+  getQaStream: 'get-qa-stream',
 } as const;
 
 export type Message =
@@ -39,7 +41,8 @@ export type Message =
   | { type: typeof MSG.getSiteStatus; origin: string }
   | { type: typeof MSG.listSources; origin: string }
   | { type: typeof MSG.indexSite; origin: string; url: string }
-  | { type: typeof MSG.ask; origin: string; question: string; requestId: string };
+  | { type: typeof MSG.ask; origin: string; question: string; requestId: string }
+  | { type: typeof MSG.getQaStream; origin: string; requestId: string };
 
 /** The only failure a one-shot request can hit before the stream starts (docs/03). */
 export type AskRejectReason = 'permission' | 'not-indexed' | 'no-key' | 'spend-cap' | 'busy';
@@ -64,6 +67,7 @@ export type MessageResponse =
   | { ok: true; kind: 'sources'; sources: SourceInfo[]; failed: FailedUrl[] }
   | { ok: true; kind: 'indexing'; origin: string }
   | { ok: true; kind: 'asking'; origin: string }
+  | { ok: true; kind: 'qa-stream'; active: boolean; heldBySw: boolean }
   | { ok: false; error: AskRejectReason | 'unhandled' };
 
 /** Port names (docs/03): popup progress events, and the SW -> runtime host channel. */
@@ -123,6 +127,11 @@ export type HostPortEvent =
   | {
       type: 'start-stream';
       requestId: string;
+      /** Session context for the takeover transcript the host writes if the SW dies (ADR-0010). */
+      origin: string;
+      question: string;
+      askedAt: number;
+      citationDocs: CitationDoc[];
       messages: ChatMessage[];
       apiKey: string;
       modelPrefs: ModelPrefs;
@@ -130,10 +139,15 @@ export type HostPortEvent =
   | { type: 'stream-chunk'; requestId: string; delta: string }
   | { type: 'stream-retry'; requestId: string }
   | { type: 'stream-done'; requestId: string; usage: QaUsage | null }
-  | { type: 'stream-error'; requestId: string; error: StreamError };
+  | { type: 'stream-error'; requestId: string; error: StreamError }
+  | { type: 'stream-status'; requestId: string }
+  | { type: 'stream-status-reply'; requestId: string; active: boolean };
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null;
+
+/** Request IDs are popup-generated, e.g. `q<timestamp><random>` (docs/03). */
+const REQUEST_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 /**
  * True for a canonical http(s) origin string, e.g. "https://example.com".
@@ -186,8 +200,14 @@ export function parseMessage(value: unknown): Message | null {
       const question = typeof value.question === 'string' ? value.question.trim() : '';
       if (question.length === 0 || question.length > 4000) return null;
       const requestId = typeof value.requestId === 'string' ? value.requestId : '';
-      if (!/^[A-Za-z0-9_-]{1,64}$/.test(requestId)) return null;
+      if (!REQUEST_ID_RE.test(requestId)) return null;
       return { type: MSG.ask, origin: value.origin, question, requestId };
+    }
+    case MSG.getQaStream: {
+      if (!isValidOrigin(value.origin)) return null;
+      const requestId = typeof value.requestId === 'string' ? value.requestId : '';
+      if (!REQUEST_ID_RE.test(requestId)) return null;
+      return { type: MSG.getQaStream, origin: value.origin, requestId };
     }
     default:
       return null;
@@ -249,6 +269,8 @@ export function isEmbedQueryResultFrame(value: unknown): value is HostPortEvent 
 const isChatMessage = (v: unknown): v is ChatMessage =>
   isRecord(v) && (v.role === 'system' || v.role === 'user') && typeof v.content === 'string';
 
+// Keep in sync with stream-client.ts's list. `interrupted` must never be
+// added: it is a popup-side synthetic reason, not something a host may send.
 const STREAM_ERROR_REASONS: readonly string[] = [
   'invalid_key',
   'no_balance',
@@ -265,10 +287,28 @@ const isStreamError = (v: unknown): v is StreamError =>
   STREAM_ERROR_REASONS.includes(v.reason) &&
   typeof v.message === 'string';
 
+const isCitationDoc = (v: unknown): v is CitationDoc => {
+  if (!isRecord(v)) return false;
+  if (typeof v.index !== 'number' || !Number.isInteger(v.index) || v.index < 1 || v.index > 999) return false;
+  if (typeof v.url !== 'string' || v.url.length === 0 || v.url.length > 4096) return false;
+  if (typeof v.title !== 'string' || v.title.length > 1024) return false;
+  // Heading paths may be empty (chunks without a heading) but never absurd.
+  if (typeof v.headingPath !== 'string' || v.headingPath.length > 1024) return false;
+  return true;
+};
+
 /** Shape-validates an inbound `start-stream` frame on the host port. */
 export function isStartStreamFrame(value: unknown): value is HostPortEvent & { type: 'start-stream' } {
   if (!isRecord(value) || value.type !== 'start-stream') return false;
   if (typeof value.requestId !== 'string' || value.requestId.length === 0) return false;
+  // Session context for the takeover transcript (ADR-0010); all fields
+  // required — SW and host ship together, no compat window.
+  if (!isValidOrigin(value.origin)) return false;
+  if (typeof value.question !== 'string' || value.question.length === 0 || value.question.length > 4000) return false;
+  if (typeof value.askedAt !== 'number' || !Number.isFinite(value.askedAt)) return false;
+  if (!Array.isArray(value.citationDocs) || value.citationDocs.length > 64 || !value.citationDocs.every(isCitationDoc)) {
+    return false;
+  }
   if (typeof value.apiKey !== 'string' || value.apiKey.length === 0) return false;
   if (!Array.isArray(value.messages) || value.messages.length < 2 || !value.messages.every(isChatMessage)) return false;
   const prefs = value.modelPrefs;
@@ -276,6 +316,29 @@ export function isStartStreamFrame(value: unknown): value is HostPortEvent & { t
   if (typeof prefs.thinking !== 'boolean' || typeof prefs.maxOutputTokens !== 'number') return false;
   if (prefs.temperature !== null && typeof prefs.temperature !== 'number') return false;
   return true;
+}
+
+/** Shape-validates an inbound `stream-status` query frame on the host port. */
+export function isStreamStatusFrame(value: unknown): value is HostPortEvent & { type: 'stream-status' } {
+  return (
+    isRecord(value) &&
+    value.type === 'stream-status' &&
+    typeof value.requestId === 'string' &&
+    value.requestId.length > 0 &&
+    value.requestId.length <= 64
+  );
+}
+
+/** Shape-validates an inbound `stream-status-reply` frame on the host port. */
+export function isStreamStatusReplyFrame(value: unknown): value is HostPortEvent & { type: 'stream-status-reply' } {
+  return (
+    isRecord(value) &&
+    value.type === 'stream-status-reply' &&
+    typeof value.requestId === 'string' &&
+    value.requestId.length > 0 &&
+    value.requestId.length <= 64 &&
+    typeof value.active === 'boolean'
+  );
 }
 
 /** Shape-validates an inbound `stream-chunk` / `stream-retry` / `stream-done` / `stream-error` frame. */

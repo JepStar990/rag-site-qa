@@ -60,11 +60,11 @@ Vector storage is `Float32Array` (not `number[]`) — 4 bytes per dimension, str
 |---|---|---|
 | `apiKey` | `string \| null` | BYOK; never synced, never in messages |
 | `modelPrefs` | `{modelId, thinking, temperature, maxOutputTokens}` | Model picker state |
-| `budget` | `{monthlyLimitUsd, spentThisMonthUsd, spendMonth, pricePerMTokens}` | Spend tracking and caps; `spentThisMonthUsd` + `spendMonth` (`YYYY-MM`) are SW-written only — the counter resets when the calendar month changes |
+| `budget` | `{monthlyLimitUsd, spentThisMonthUsd, spendMonth, pricePerMTokens}` | Spend tracking and caps; `spentThisMonthUsd` + `spendMonth` (`YYYY-MM`) are written only by the service worker and the runtime host's takeover path (ADR-0010), serialized under a Web Locks mutex — the counter resets when the calendar month changes |
 | `caps` | `{maxPages, maxDepth, maxChunksPerSite, politenessMs, chunkTokens, chunkOverlapTokens}` | Crawl and chunk bounds |
 | `retrieval` | `{topK, contextTokenBudget}` | Retrieval budget |
 
-`chrome.storage.session` (in-memory only, cleared on browser restart) holds transient stream state while a QA answer is in flight: the per-origin transcript `qa:<origin>` (streaming deltas buffered as they arrive, replaced by the final answer with citations, usage, and cost on completion, or the mapped error on failure) and per-batch indexing progress. It is never a source of truth — on restart, incomplete answers are discarded and indexing resumes from IndexedDB checkpoints. On Firefox it doubles as the heartbeat medium that keeps the background event page alive during long jobs (ADR-0001).
+`chrome.storage.session` (in-memory only, cleared on browser restart) holds transient stream state while a QA answer is in flight: the per-origin transcript `qa:<origin>` (streaming deltas buffered as they arrive, replaced by the final answer with citations, usage, and cost on completion, or the mapped error on failure) and per-batch indexing progress. Transcript writers, by phase: the service worker during a normal answer, the runtime host when it takes over a stream whose SW died, and the popup when it marks a dead stream `interrupted` (ADR-0010). It is never a source of truth — on restart, incomplete answers are discarded and indexing resumes from IndexedDB checkpoints. On Firefox it doubles as the heartbeat medium that keeps the background event page alive during long jobs (ADR-0001).
 
 ## Storage budget
 

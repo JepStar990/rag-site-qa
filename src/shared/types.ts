@@ -176,4 +176,23 @@ export type QaErrorReason =
   | 'provider'
   | 'network'
   | 'bad_request'
-  | 'too_large';
+  | 'too_large'
+  /**
+   * Popup-side synthetic reason: the stream's owner died and no live stream
+   * is reachable (ADR-0010). Never travels over the host port — the
+   * `STREAM_ERROR_REASONS` allow-lists in msg-protocol.ts and
+   * stream-client.ts must never gain it.
+   */
+  | 'interrupted';
+
+/**
+ * The subset of a retrieved document the runtime host needs to validate
+ * citations on a takeover-written answer (ADR-0010). Deliberately no chunk
+ * text: the context already travels in the messages array.
+ */
+export interface CitationDoc {
+  index: number;
+  url: string;
+  title: string;
+  headingPath: string;
+}

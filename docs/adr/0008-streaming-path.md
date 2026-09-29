@@ -17,3 +17,5 @@ The streaming client lives in the runtime host (ADR-0001): the offscreen documen
 - The API key travels SW -> runtime host over the port for one request only; it is never stored in host state and never appears in `runtime.onMessage` payloads (04).
 - Retries happen only before the first streamed token, so a partial answer is never re-sent and double-billed (06).
 - Firefox hosts the stream in the background event page; the chunk relays and `chrome.storage.session` delta writes it performs are parent extension-API calls that reset the event page's idle timer (Bug 1844041), so the stream stays alive even with the popup closed. The abstraction is identical from the SW's perspective.
+
+See [ADR-0010](0010-stream-takeover.md) for what happens when the service worker itself dies mid-stream: the host takes over the terminal transcript write, and the popup watchdog resolves streams that nothing can finish.
