@@ -51,14 +51,17 @@ All model configuration (`modelId`, `thinking`, `temperature`, `maxOutputTokens`
 | 429 | Rate limited | Yes, with backoff | "Rate limited by DeepSeek. Retrying automatically." |
 | 500 / 502 / 503 | Provider-side failure | Yes, with backoff | "DeepSeek is having trouble. Retrying." |
 | Network error / timeout | Local connectivity | Yes | "Could not reach DeepSeek. Check your connection." |
+| `interrupted` (popup-only) | The stream's owner died and no live stream remains (ADR-0010) | No | "This answer was interrupted. Ask again." — input re-enabled; a re-ask is a new billed request |
 
-**Retry policy:** exponential backoff with jitter (1s, 2s, 4s, ±20%), maximum 3 attempts, only while nothing has streamed yet — a partially streamed answer is never re-sent (duplicate billing). Each retry is surfaced to the popup as `answer-retry`. Persistent failure ends the stream with the mapped error, which the popup shows as a dismissible banner. A 30s connect timeout (AbortController) bounds every attempt.
+The `interrupted` reason is synthetic, produced only by the popup watchdog: it never travels over the host port and the wire validators reject it there.
+
+**Retry policy:** exponential backoff with jitter (1s, 2s, 4s, ±20%), maximum 3 attempts, only while nothing has streamed yet — a partially streamed answer is never re-sent, so no request is ever billed twice by a retry. Each retry is surfaced to the popup as `answer-retry`. Persistent failure ends the stream with the mapped error, which the popup shows as a dismissible banner. A 30s connect timeout (AbortController) bounds every attempt.
 
 ## Token accounting and spend control
 
 - **Budgets per request:** assembled context capped at `contextTokenBudget` (8000); `maxOutputTokens` (2048) bounds generation. Both are settings the user can lower.
-- **Concurrency:** one QA request in flight at a time (a single global slot in the SW); a concurrent ask is rejected as busy and the popup disables the Ask button while one runs.
-- **Spend tracking:** every response's `usage` (prompt/completion tokens) is multiplied by the user-editable per-1M-token prices and added to `budget.spentThisMonthUsd`. A response without `usage` counts as zero cost (no estimation). Defaults are flash off-peak pricing (2026-08): $0.22 input / $0.66 output per 1M; pro is $0.66 / $1.98. The counter is stamped with `budget.spendMonth` and resets when the local calendar month changes; the SW is the only writer of both fields (05).
+- **Concurrency:** one QA request in flight at a time (a single global slot in the SW); a concurrent ask is rejected as busy and the popup disables the Ask button while one runs. The slot is SW-memory state and is lost if the SW is torn down mid-answer — on a restarted SW, the preflight re-checks the stored transcript against the runtime host and reports busy while the old stream can still reach a terminal state, so a fresh ask cannot double-bill an answer already in flight (ADR-0010).
+- **Spend tracking:** every response's `usage` (prompt/completion tokens) is multiplied by the user-editable per-1M-token prices and added to `budget.spentThisMonthUsd`. A response without `usage` counts as zero cost (no estimation). Defaults are flash off-peak pricing (2026-08): $0.22 input / $0.66 output per 1M; pro is $0.66 / $1.98. The counter is stamped with `budget.spendMonth` and resets when the local calendar month changes; only the SW and the runtime host's takeover path write both fields (05), serialized under a Web Locks mutex.
 - **Spend cap:** when `spentThisMonthUsd` reaches `monthlyLimitUsd` (default $5), new requests are blocked with a reset-time message. The cap is an estimate — DeepSeek has no server-side cap for BYOK keys; this is a local guardrail, not a guarantee.
 - **Usage readout:** the popup footer shows tokens and estimated cost of the last answer, plus month-to-date spend against the cap.
 
@@ -72,7 +75,7 @@ sequenceDiagram
     participant OFF as Runtime Host
     participant D as DeepSeek API
 
-    SW->>OFF: start-stream {requestId, messages, key, prefs}
+    SW->>OFF: start-stream {requestId, messages, key, prefs, origin, question, askedAt, citationDocs}
     OFF->>D: POST /chat/completions (stream)
     loop SSE
         D-->>OFF: delta
@@ -82,12 +85,17 @@ sequenceDiagram
     OFF->>SW: stream-done {requestId, usage}
     SW->>SW: update budget state
     SW->>SW: validate citations, persist transcript
+    alt SW died mid-stream (ADR-0010)
+        OFF->>OFF: finish the stream, validate citations from citationDocs,
+        OFF->>OFF: account spend, write the terminal transcript itself
+    end
 ```
 
 - The key travels SW to the runtime host over the port for the lifetime of one request only; it is never stored in host state and never appears in any `runtime.onMessage` payload.
 - The popup renders deltas as sanitized markdown as they arrive; citation validation runs on the complete answer.
 - If the popup is closed mid-stream, the SW finishes the stream to completion (bounded by the output cap), persists the transcript to `storage.session` under `qa:<origin>` (05), and the user can reopen the popup to read it — a reopened popup restores the transcript mid-stream and keeps appending deltas.
-- Firefox: the runtime host is the background event page (ADR-0001). Each chunk relay and each `chrome.storage.session` delta write is a parent extension-API call, which resets Firefox's event-page idle timer (Bug 1844041), so the stream stays alive with or without the popup open.
+- **Takeover (ADR-0010):** if the SW dies mid-stream, the offscreen document finishes the answer and writes the terminal transcript itself — the answer the user was billed for is never lost, so an interrupted answer does not have to be re-asked and billed twice. A re-ask after an answer that genuinely ended in `interrupted` is a new billed request.
+- Firefox: the runtime host is the background event page (ADR-0001). Each chunk relay and each `chrome.storage.session` delta write is a parent extension-API call, which resets Firefox's event-page idle timer (Bug 1844041), so the stream stays alive with or without the popup open. There is no separate takeover writer — when the event page dies, the stream dies with it, and the popup watchdog resolves the transcript as interrupted.
 
 ## BYOK onboarding UX
 

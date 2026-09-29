@@ -11,5 +11,6 @@
 | [0007](0007-preact.md) | Preact for extension pages | Accepted |
 | [0008](0008-streaming-path.md) | LLM streaming through the runtime host with port relay | Accepted |
 | [0009](0009-cross-browser-packaging.md) | One codebase, two build targets, namespace shim | Accepted |
+| [0010](0010-stream-takeover.md) | On SW death mid-stream, the host writes the terminal transcript itself; the popup watchdog resolves streams nothing can finish | Accepted |
 
 Format: one ADR per file; status Accepted or Superseded; superseded ADRs link to their replacement.

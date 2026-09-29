@@ -50,7 +50,7 @@ sequenceDiagram
     RH-->>SW: query vector (same embedder)
     SW->>IDB: top-k dot-product over vectors, load texts
     SW->>SW: assemble prompt with guardrails and budget
-    SW->>RH: start-stream {messages, key, prefs}
+    SW->>RH: start-stream {messages, key, prefs, origin, question, askedAt, citationDocs}
     RH->>D: POST /chat/completions with stream=true
     loop SSE chunks
         D-->>RH: delta tokens
@@ -60,6 +60,8 @@ sequenceDiagram
     RH-->>SW: stream-done {usage tokens}
     SW->>IDB: add usage to budget state
     SW-->>P: answer-done {answer, citations, usage, costUsd}
+    Note over RH: if the SW died mid-stream, the host finishes the
+    Note over RH: answer and writes the terminal transcript itself (ADR-0010)
 ```
 
 ## Crawl job state machine
@@ -98,10 +100,14 @@ All communication between contexts goes through a validated message bus in the s
 | `index-failed` | SW -> popup | `{origin, reason}` | M2 |
 | `list-sources` | popup -> SW | `{origin}` | M2 |
 | `ask-site` | popup -> SW | `{origin, question, requestId}` | M3 |
+| `get-qa-stream` | popup -> SW | `{origin, requestId}`; asks whether a live stream can still produce a terminal state | M4 |
+| `start-stream` | SW -> runtime host | `{requestId, messages, key, prefs, origin, question, askedAt, citationDocs}` — the session context the host needs for its takeover transcript (ADR-0010) | M3 |
 | `stream-chunk` | runtime host -> SW | `{requestId, delta}` | M3 |
 | `stream-retry` | runtime host -> SW | `{requestId}` (backoff retry before any content, 06) | M3 |
 | `stream-done` | runtime host -> SW | `{requestId, usage}` (null when the provider omits usage) | M3 |
 | `stream-error` | runtime host -> SW | `{requestId, error}` (mapped per the 06 matrix) | M3 |
+| `stream-status` | SW -> runtime host | `{requestId}`; raw-port liveness query, never creates or closes the offscreen document | M4 |
+| `stream-status-reply` | runtime host -> SW | `{requestId, active}` | M4 |
 | `answer-token` | SW -> popup | `{requestId, origin, delta}` | M3 |
 | `answer-retry` | SW -> popup | `{requestId, origin}` | M3 |
 | `answer-done` | SW -> popup | `{requestId, origin, answer, citations, usage, costUsd, spentThisMonthUsd}` | M3 |
@@ -154,13 +160,14 @@ Validation rules, applied in order for every incoming message:
 
 ## LLM streaming client (runtime host)
 
-- Receives `{messages, key, prefs}` from the SW, POSTs to `https://api.deepseek.com/chat/completions` with `stream: true`, and relays SSE deltas back to the SW over the port (`stream-chunk` / `stream-retry` / `stream-done` / `stream-error`). Each relayed chunk resets MV3 idle timers.
+- Receives `{messages, key, prefs, origin, question, askedAt, citationDocs}` from the SW, POSTs to `https://api.deepseek.com/chat/completions` with `stream: true`, and relays SSE deltas back to the SW over the port (`stream-chunk` / `stream-retry` / `stream-done` / `stream-error`). Each relayed chunk resets MV3 idle timers.
+- **Takeover (ADR-0010):** if the SW port dies mid-stream, the host finishes the answer and writes the terminal transcript to `storage.session` itself — citations validated from `citationDocs`, spend accounted with the same budget write the SW uses. A completed answer is never lost to a re-ask.
 - Retries happen only before any content has streamed — a partially streamed answer is never re-sent (duplicate billing). The API key lives only in the fetch headers of the current request; it is never stored in host state.
 - Error mapping, retries, and token accounting are specified in [06 — LLM Integration](06-llm-integration.md).
 
 ## Popup UI
 
-States: `inactive` (site not granted), `indexing` (progress bar, page and chunk counts), `ready` (QA chat, sources list, storage readout), `error` (banner with actionable message). On open, the popup reads the active tab's URL via `activeTab` (no `tabs` permission, 07) and asks the SW for the site status; the grant button requests the per-site optional host permission. M1 reaches `inactive`/`idle`; the remaining states arrive with M2/M3. The QA area is a question box plus Ask (Enter submits; disabled while an answer is in flight). Answer deltas stream in, correlated on `requestId`, and render as sanitized markdown with `[n]` citation chips that expand to source URL and heading. Mapped errors (401/402/429/5xx, 06) show as dismissible banners; key and spend errors link straight to options. A spend footer shows the last answer's tokens and cost plus month-to-date spend against the cap. Closing the popup mid-answer loses nothing: the transcript is buffered to `storage.session` per origin (05) and restored on reopen, mid-stream or complete. Only the popup renders model output; nothing it renders can execute (marked + DOMPurify, 04).
+States: `inactive` (site not granted), `indexing` (progress bar, page and chunk counts), `ready` (QA chat, sources list, storage readout), `error` (banner with actionable message). On open, the popup reads the active tab's URL via `activeTab` (no `tabs` permission, 07) and asks the SW for the site status; the grant button requests the per-site optional host permission. M1 reaches `inactive`/`idle`; the remaining states arrive with M2/M3. The QA area is a question box plus Ask (Enter submits; disabled while an answer is in flight). Answer deltas stream in, correlated on `requestId`, and render as sanitized markdown with `[n]` citation chips that expand to source URL and heading. Mapped errors (401/402/429/5xx, 06) show as dismissible banners; key and spend errors link straight to options. A spend footer shows the last answer's tokens and cost plus month-to-date spend against the cap. Closing the popup mid-answer loses nothing: the transcript is buffered to `storage.session` per origin (05) and restored on reopen, mid-stream or complete. Every `asking` phase runs a watchdog (ADR-0010): it applies the terminal transcript whenever it lands (from the SW or the host's takeover write) and, once no live stream can produce one, shows "This answer was interrupted. Ask again." and re-enables the input — a restored dead stream never dead-ends at "Answering...". Only the popup renders model output; nothing it renders can execute (marked + DOMPurify, 04).
 
 ## Options page
 

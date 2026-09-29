@@ -6,6 +6,8 @@ import {
   isHostFrame,
   isStartStreamFrame,
   isStreamFrame,
+  isStreamStatusFrame,
+  isStreamStatusReplyFrame,
   isValidOrigin,
   parseMessage,
   parsePortEvent,
@@ -168,6 +170,21 @@ describe('parseMessage ask-site', () => {
   });
 });
 
+describe('parseMessage get-qa-stream', () => {
+  const query = { type: MSG.getQaStream, origin: 'https://example.com', requestId: 'q123abc' };
+
+  it('parses a well-formed stream status query', () => {
+    expect(parseMessage(query)).toEqual(query);
+  });
+
+  it('rejects malformed requestIds and origins', () => {
+    expect(parseMessage({ ...query, requestId: 'has spaces' })).toBeNull();
+    expect(parseMessage({ ...query, requestId: '' })).toBeNull();
+    expect(parseMessage({ ...query, origin: 'https://example.com/path' })).toBeNull();
+    expect(parseMessage({ ...query, origin: 42 })).toBeNull();
+  });
+});
+
 describe('isEmbedQueryFrame', () => {
   it('accepts a well-formed query embed request', () => {
     expect(isEmbedQueryFrame({ type: 'embed-query', batchId: 2, texts: ['a question'] })).toBe(true);
@@ -198,9 +215,14 @@ describe('isEmbedQueryResultFrame', () => {
 });
 
 describe('isStartStreamFrame', () => {
+  const citationDoc = { index: 1, url: 'https://example.com/a', title: 'A', headingPath: '' };
   const frame = {
     type: 'start-stream',
     requestId: 'q1',
+    origin: 'https://example.com',
+    question: 'question',
+    askedAt: 1720000000000,
+    citationDocs: [citationDoc],
     apiKey: 'sk-key',
     messages: [
       { role: 'system', content: 'locked' },
@@ -220,6 +242,41 @@ describe('isStartStreamFrame', () => {
     expect(isStartStreamFrame({ ...frame, modelPrefs: { modelId: '' } })).toBe(false);
     expect(isStartStreamFrame({ ...frame, requestId: '' })).toBe(false);
   });
+
+  it('requires the takeover session context fields (ADR-0010)', () => {
+    expect(isStartStreamFrame({ ...frame, origin: undefined })).toBe(false);
+    expect(isStartStreamFrame({ ...frame, origin: 'https://example.com/path' })).toBe(false);
+    expect(isStartStreamFrame({ ...frame, question: '' })).toBe(false);
+    expect(isStartStreamFrame({ ...frame, question: 'x'.repeat(4001) })).toBe(false);
+    expect(isStartStreamFrame({ ...frame, askedAt: undefined })).toBe(false);
+    expect(isStartStreamFrame({ ...frame, askedAt: Number.NaN })).toBe(false);
+    expect(isStartStreamFrame({ ...frame, citationDocs: undefined })).toBe(false);
+  });
+
+  it('bounds citation docs (ADR-0010)', () => {
+    expect(isStartStreamFrame({ ...frame, citationDocs: [] })).toBe(true);
+    expect(isStartStreamFrame({ ...frame, citationDocs: Array.from({ length: 65 }, () => citationDoc) })).toBe(false);
+    expect(isStartStreamFrame({ ...frame, citationDocs: [{ ...citationDoc, index: 0 }] })).toBe(false);
+    expect(isStartStreamFrame({ ...frame, citationDocs: [{ ...citationDoc, url: '' }] })).toBe(false);
+    expect(isStartStreamFrame({ ...frame, citationDocs: [{ ...citationDoc, url: 'x'.repeat(4097) }] })).toBe(false);
+    expect(isStartStreamFrame({ ...frame, citationDocs: [{ ...citationDoc, title: 'x'.repeat(1025) }] })).toBe(false);
+    expect(isStartStreamFrame({ ...frame, citationDocs: [{ ...citationDoc, headingPath: 'x'.repeat(1025) }] })).toBe(false);
+  });
+});
+
+describe('isStreamStatusFrame / isStreamStatusReplyFrame', () => {
+  it('accepts well-formed status query and reply frames', () => {
+    expect(isStreamStatusFrame({ type: 'stream-status', requestId: 'q1' })).toBe(true);
+    expect(isStreamStatusReplyFrame({ type: 'stream-status-reply', requestId: 'q1', active: true })).toBe(true);
+    expect(isStreamStatusReplyFrame({ type: 'stream-status-reply', requestId: 'q1', active: false })).toBe(true);
+  });
+
+  it('rejects malformed status frames', () => {
+    expect(isStreamStatusFrame({ type: 'stream-status', requestId: '' })).toBe(false);
+    expect(isStreamStatusFrame({ type: 'stream-chunk', requestId: 'q1' })).toBe(false);
+    expect(isStreamStatusReplyFrame({ type: 'stream-status-reply', requestId: 'q1', active: 'yes' })).toBe(false);
+    expect(isStreamStatusReplyFrame({ type: 'stream-status-reply', requestId: '' })).toBe(false);
+  });
 });
 
 describe('isStreamFrame', () => {
@@ -238,5 +295,13 @@ describe('isStreamFrame', () => {
     expect(isStreamFrame({ type: 'stream-error', requestId: 'q1', error: { reason: 'haunted', message: 'x' } })).toBe(false);
     expect(isStreamFrame({ type: 'stream-chunk', requestId: 'q1', delta: 5 })).toBe(false);
     expect(isStreamFrame({ type: 'embed-batch', requestId: 'q1', delta: 'x' })).toBe(false);
+  });
+
+  it('never accepts the popup-only interrupted reason over the host port', () => {
+    // `interrupted` is a popup-side synthetic reason (ADR-0010): a host
+    // must never be able to send it.
+    expect(isStreamFrame({ type: 'stream-error', requestId: 'q1', error: { reason: 'interrupted', message: 'x' } })).toBe(
+      false,
+    );
   });
 });

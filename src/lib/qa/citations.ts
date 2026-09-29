@@ -6,16 +6,19 @@
  * URLs in model output are never rendered as links).
  */
 
-import type { QaCitation } from '../../shared/types';
-import type { RetrievedDoc } from './retrieve';
+import type { CitationDoc, QaCitation } from '../../shared/types';
 
 /**
  * Extracts `[n]` markers from the finished answer, keeps the ones that map
  * to an actual retrieved document, and resolves them to URL, title, and
  * heading. First occurrence wins; order follows the answer text.
+ *
+ * Takes `CitationDoc` — the four provenance fields — so both callers pass
+ * what they hold: the SW passes retrieved docs, the runtime host's takeover
+ * passes the citation docs that rode along in start-stream (ADR-0010).
  */
-export function parseCitations(answer: string, docs: RetrievedDoc[]): QaCitation[] {
-  const byIndex = new Map<number, RetrievedDoc>();
+export function parseCitations(answer: string, docs: CitationDoc[]): QaCitation[] {
+  const byIndex = new Map<number, CitationDoc>();
   for (const doc of docs) byIndex.set(doc.index, doc);
 
   const seen = new Set<number>();
